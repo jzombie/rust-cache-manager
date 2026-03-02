@@ -17,17 +17,58 @@ It is suitable for:
 
 ## Usage
 
-Basic terminology and examples showing common operations:
+### Mental model: root -> groups -> entries
 
-### CacheRoot
+- `CacheRoot`: project/workspace anchor path.
+- `CacheGroup`: subdirectory under a root where a class of cache files lives.
+- Entries: files under a group (for example `v1/index.bin`).
 
-The primary root type is `CacheRoot`, which represents a filesystem root
-under which cache groups (`CacheGroup`) live.
+`CacheRoot` and `CacheGroup` are lightweight path objects. Constructing them does not create directories.
 
-### CacheGroup
+### Quick start
 
-A `CacheGroup` represents a subdirectory under a `CacheRoot` and manages
-cache entries stored in that directory.
+Using `touch` (convenient when you want this crate to create the file):
+
+```rust
+use cache_manager::CacheRoot;
+
+let root = CacheRoot::from_root("/tmp/project");
+let group = root.group("artifacts/json");
+
+// Create the group directory if needed.
+group.ensure_dir().expect("ensure group");
+
+// `index.bin` is just an example artifact filename that another program might generate.
+let entry: std::path::PathBuf = group.touch("v1/index.bin").expect("touch entry");
+println!("{}", entry.display());
+```
+
+Without `touch` (compute from `group.path()` and write with your own I/O):
+
+```rust
+use cache_manager::CacheRoot;
+use std::fs;
+
+let root = CacheRoot::from_root("/tmp/project");
+let group = root.group("artifacts/json");
+
+group.ensure_dir().expect("ensure group");
+
+let entry_without_touch = group.path().join("v1/index.bin");
+fs::create_dir_all(entry_without_touch.parent().expect("entry parent"))
+	.expect("create entry parent");
+fs::write(&entry_without_touch, b"artifact bytes").expect("write artifact");
+println!("{}", entry_without_touch.display());
+```
+
+### Filesystem effects
+
+- **Pure path operations:** `CacheRoot::from_root`, `CacheRoot::discover_cache_path`, `CacheRoot::cache_path`, `CacheRoot::group`, `CacheGroup::entry_path`, `CacheGroup::subgroup`
+- **Create dirs:** `CacheRoot::ensure_group`, `CacheGroup::ensure_dir`
+- **Create dirs + optional eviction:** `CacheRoot::ensure_group_with_policy`, `CacheGroup::ensure_dir_with_policy`
+- **Create file (creates parents):** `CacheGroup::touch`
+
+> Note: eviction only runs when you pass a policy to the `*_with_policy` methods.
 
 ### Discovering cache paths
 
@@ -63,15 +104,6 @@ let kept = CacheRoot::discover_cache_path(".cache", &absolute);
 assert_eq!(kept, absolute);
 ```
 
-**Filesystem effects**
-
-- **Pure (no I/O):** `CacheRoot::discover`, `CacheRoot::discover_cache_path`, `CacheRoot::cache_path`, `CacheRoot::group`, `CacheGroup::entry_path`, `CacheGroup::subgroup`
-- **Create dirs:** `CacheRoot::ensure_group`, `CacheGroup::ensure_dir`
-- **Create dirs + optional eviction:** `CacheRoot::ensure_group_with_policy`, `CacheGroup::ensure_dir_with_policy`
-- **Create file (creates parents as needed):** `CacheGroup::touch`
-
-> Note: eviction only runs when you pass a policy to the `*_with_policy` methods.
-
 ### Eviction Policy
 
 Use `EvictPolicy` with:
@@ -80,11 +112,78 @@ Use `EvictPolicy` with:
 - `CacheRoot::ensure_group_with_policy(...)`
 - `CacheGroup::eviction_report(...)` to preview which files would be evicted.
 
+Apply policy directly to a `CacheGroup`:
+
+```rust
+use cache_manager::{CacheRoot, EvictPolicy};
+
+let root = CacheRoot::from_root("/tmp/project");
+let group = root.group("artifacts");
+
+let policy = EvictPolicy {
+	max_files: Some(100),
+	..Default::default()
+};
+
+group
+	.ensure_dir_with_policy(Some(&policy))
+	.expect("ensure and evict");
+```
+
+Apply policy through `CacheRoot` convenience API:
+
+```rust
+use cache_manager::{CacheRoot, EvictPolicy};
+use std::time::Duration;
+
+let root = CacheRoot::from_root("/tmp/project");
+let policy = EvictPolicy {
+	max_age: Some(Duration::from_secs(60 * 60 * 24 * 30)), // 30 days
+	..Default::default()
+};
+
+root
+	.ensure_group_with_policy("artifacts", Some(&policy))
+	.expect("ensure group and evict");
+```
+
+Preview evictions without deleting files:
+
+```rust
+use cache_manager::{CacheRoot, EvictPolicy};
+
+let root = CacheRoot::from_root("/tmp/project");
+let group = root.group("artifacts");
+let policy = EvictPolicy {
+	max_bytes: Some(10_000_000),
+	..Default::default()
+};
+
+let report = group.eviction_report(&policy).expect("eviction report");
+for path in report.marked_for_eviction {
+	println!("would remove: {}", path.display());
+}
+```
+
 Policy fields:
 
 - `max_age`: remove files older than or equal to the age threshold.
 - `max_files`: keep at most N files.
 - `max_bytes`: keep total file bytes at or below the threshold.
+
+Policies can be combined by setting multiple fields in one `EvictPolicy`.
+When combined, all configured limits are enforced in order.
+
+```rust
+use cache_manager::EvictPolicy;
+use std::time::Duration;
+
+let combined = EvictPolicy {
+	max_age: Some(Duration::from_secs(60 * 60 * 24 * 30)), // 30 days
+	max_files: Some(200),
+	max_bytes: Some(500 * 1024 * 1024), // 500 MB
+};
+```
 
 Eviction order is always:
 
@@ -104,43 +203,7 @@ For `max_files` and `max_bytes`, files are evicted oldest-first by modified time
 - Directories are not counted as bytes.
 - Enforcement happens only during policy-aware `ensure_*_with_policy` calls (not continuously in the background).
 
-### More examples
-
-Create a `CacheRoot` from an explicit path and apply an eviction policy to a group:
-
-```rust
-use cache_manager::{CacheRoot, EvictPolicy};
-use std::time::Duration;
-
-let root = CacheRoot::from_root("/tmp/project");
-let group = root.group("artifacts");
-
-let policy = EvictPolicy {
-	max_files: Some(100),
-	max_age: Some(Duration::from_secs(60 * 60 * 24 * 30)), // 30 days
-	..Default::default()
-};
-
-group.ensure_dir_with_policy(Some(&policy)).expect("ensure and evict");
-```
-
-Preview which files would be removed without applying deletions:
-
-```rust
-use cache_manager::{CacheRoot, EvictPolicy};
-
-let root = CacheRoot::from_root("/tmp/project");
-let group = root.group("artifacts");
-let policy = EvictPolicy {
-	max_files: Some(10),
-	..Default::default()
-};
-
-let report = group.eviction_report(&policy).expect("eviction report");
-for p in report.marked_for_eviction {
-	println!("would remove: {}", p.display());
-}
-```
+### Additional examples
 
 Create or update a cache entry (ensures parent directories exist):
 
@@ -154,11 +217,13 @@ let entry = group.touch("v1/index.bin").expect("touch entry");
 println!("touched: {}", entry.display());
 ```
 
-Per-subdirectory policies
+#### Per-subdirectory policies
 
 Different subdirectories under the same `CacheRoot` can use independent policies; call `ensure_dir_with_policy` on each `CacheGroup` separately to apply per-group rules.
 
-Get the root path
+Note: calling `CacheGroup::ensure_dir()` is equivalent to `CacheGroup::ensure_dir_with_policy(None)`. Likewise, `CacheRoot::ensure_group(...)` behaves the same as `CacheRoot::ensure_group_with_policy(..., None)`.
+
+#### Get the root path
 
 To obtain the underlying filesystem path for a `CacheRoot`, use `path()`:
 

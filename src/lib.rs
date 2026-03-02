@@ -110,9 +110,7 @@ impl CacheRoot {
 
     /// Ensure the given group directory exists, creating parents as required.
     pub fn ensure_group<P: AsRef<Path>>(&self, relative_group: P) -> io::Result<PathBuf> {
-        let group = self.group_path(relative_group);
-        fs::create_dir_all(&group)?;
-        Ok(group)
+        self.ensure_group_with_policy(relative_group, None)
     }
 
     /// Ensure the given group exists and optionally apply an eviction policy.
@@ -172,8 +170,7 @@ impl CacheGroup {
 
     /// Ensure the group directory exists on disk, creating parents as needed.
     pub fn ensure_dir(&self) -> io::Result<&Path> {
-        fs::create_dir_all(&self.path)?;
-        Ok(&self.path)
+        self.ensure_dir_with_policy(None)
     }
 
     /// Ensures this directory exists, then applies optional eviction.
@@ -939,5 +936,42 @@ mod tests {
             result.err().expect("expected missing-dir error").kind(),
             io::ErrorKind::NotFound
         );
+    }
+
+    #[test]
+    fn ensure_dir_equals_ensure_dir_with_policy_none() {
+        let tmp = TempDir::new().expect("tempdir");
+        let cache = CacheRoot::from_root(tmp.path());
+        let group = cache.group("artifacts/eq");
+
+        let p1 = group.ensure_dir().expect("ensure dir");
+        // create a file so we can verify calling the policy-aware
+        // variant with `None` does not remove or alter contents.
+        fs::write(group.entry_path("keep.txt"), b"keep").expect("write file");
+
+        let p2 = group
+            .ensure_dir_with_policy(None)
+            .expect("ensure dir with None policy");
+
+        assert_eq!(p1, p2);
+        assert!(group.entry_path("keep.txt").exists());
+    }
+
+    #[test]
+    fn ensure_group_equals_ensure_group_with_policy_none() {
+        let tmp = TempDir::new().expect("tempdir");
+        let cache = CacheRoot::from_root(tmp.path());
+
+        let p1 = cache.ensure_group("artifacts/roots").expect("ensure group");
+        let group = cache.group("artifacts/roots");
+        // create a file to ensure no-op policy does not remove it
+        fs::write(group.entry_path("keep_root.txt"), b"keep").expect("write file");
+
+        let p2 = cache
+            .ensure_group_with_policy("artifacts/roots", None)
+            .expect("ensure group with None policy");
+
+        assert_eq!(p1, p2);
+        assert!(group.entry_path("keep_root.txt").exists());
     }
 }
