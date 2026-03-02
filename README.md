@@ -47,6 +47,72 @@ For `max_files` and `max_bytes`, files are evicted oldest-first by modified time
 - Directories are not counted as bytes.
 - Enforcement happens only during policy-aware `ensure_*_with_policy` calls (not continuously in the background).
 
+## Usage
+
+Basic examples showing common operations:
+
+Discover a cache path for the current crate/workspace and resolve an entry path:
+
+```rust
+use cache_manager::CacheRoot;
+
+let p = CacheRoot::discover_cache_path(".cache", "tool/data.bin");
+println!("cache path: {}", p.display());
+```
+
+Create a `CacheRoot` from an explicit path and apply an eviction policy to a group:
+
+```rust
+use cache_manager::{CacheRoot, EvictPolicy};
+use std::time::Duration;
+
+let root = CacheRoot::from_root("/tmp/project");
+let group = root.group("artifacts");
+
+let policy = EvictPolicy {
+	max_files: Some(100),
+	max_age: Some(Duration::from_secs(60 * 60 * 24 * 30)), // 30 days
+	..Default::default()
+};
+
+group.ensure_dir_with_policy(Some(&policy)).expect("ensure and evict");
+```
+
+Preview which files would be removed without applying deletions:
+
+```rust
+use cache_manager::{CacheRoot, EvictPolicy};
+
+let root = CacheRoot::from_root("/tmp/project");
+let group = root.group("artifacts");
+let policy = EvictPolicy {
+	max_files: Some(10),
+	..Default::default()
+};
+
+let report = group.eviction_report(&policy).expect("eviction report");
+for p in report.marked_for_eviction {
+	println!("would remove: {}", p.display());
+}
+```
+
+Create or update a cache entry (ensures parent directories exist):
+
+```rust
+use cache_manager::CacheRoot;
+
+let root = CacheRoot::from_root("/tmp/project");
+let group = root.group("artifacts/json");
+
+let entry = group.touch("v1/index.bin").expect("touch entry");
+println!("touched: {}", entry.display());
+```
+
+Per-subdirectory policies
+
+Different subdirectories under the same `CacheRoot` can use independent policies; call `ensure_dir_with_policy` on each `CacheGroup` separately to apply per-group rules.
+
+
 ## License
 
 `cache-manager` is primarily distributed under the terms of both the MIT license and the Apache License (Version 2.0).

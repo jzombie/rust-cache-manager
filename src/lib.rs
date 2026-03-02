@@ -1,3 +1,6 @@
+#![doc = include_str!("../README.md")]
+#![warn(missing_docs)]
+
 use std::env;
 use std::fs;
 use std::fs::OpenOptions;
@@ -53,46 +56,64 @@ struct FileEntry {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+/// Represents a discovered or explicit cache root directory.
+///
+/// Use `CacheRoot::discover()` to find the nearest crate root from the
+/// current working directory, or `CacheRoot::from_root(...)` to construct one
+/// from an explicit path.
 pub struct CacheRoot {
     root: PathBuf,
 }
 
 impl CacheRoot {
+    /// Discover the cache root by searching parent directories for `Cargo.toml`.
+    ///
+    /// Falls back to the current working directory when no crate root is found.
     pub fn discover() -> io::Result<Self> {
         let cwd = env::current_dir()?;
         let root = find_crate_root(&cwd).unwrap_or(cwd);
         Ok(Self { root })
     }
 
+    /// Create a `CacheRoot` from an explicit filesystem path.
     pub fn from_root<P: Into<PathBuf>>(root: P) -> Self {
         Self { root: root.into() }
     }
 
+    /// Like `discover()` but never returns an `io::Result` — falls back to `.` on error.
     pub fn discover_or_cwd() -> Self {
         let cwd = env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
         let root = find_crate_root(&cwd).unwrap_or(cwd);
         Self { root }
     }
 
+    /// Returns the root path represented by this `CacheRoot`.
     pub fn root(&self) -> &Path {
         &self.root
     }
 
+    /// Build a `CacheGroup` for a relative subdirectory under this root.
     pub fn group<P: AsRef<Path>>(&self, relative_group: P) -> CacheGroup {
         let path = self.root.join(relative_group.as_ref());
         CacheGroup { path }
     }
 
+    /// Resolve a relative group path to an absolute `PathBuf` under this root.
     pub fn group_path<P: AsRef<Path>>(&self, relative_group: P) -> PathBuf {
         self.root.join(relative_group.as_ref())
     }
 
+    /// Ensure the given group directory exists, creating parents as required.
     pub fn ensure_group<P: AsRef<Path>>(&self, relative_group: P) -> io::Result<PathBuf> {
         let group = self.group_path(relative_group);
         fs::create_dir_all(&group)?;
         Ok(group)
     }
 
+    /// Ensure the given group exists and optionally apply an eviction policy.
+    ///
+    /// When `policy` is `Some`, files will be evaluated and removed according
+    /// to the `EvictPolicy` rules. Passing `None` performs only directory creation.
     pub fn ensure_group_with_policy<P: AsRef<Path>>(
         &self,
         relative_group: P,
@@ -103,6 +124,9 @@ impl CacheRoot {
         Ok(group.path().to_path_buf())
     }
 
+    /// Resolve a cache entry path given a cache directory (relative to the root)
+    /// and a relative entry path. Absolute `relative_path` values are returned
+    /// unchanged.
     pub fn cache_path<P: AsRef<Path>, Q: AsRef<Path>>(
         &self,
         cache_dir: P,
@@ -115,6 +139,9 @@ impl CacheRoot {
         self.group(cache_dir).entry_path(rel)
     }
 
+    /// Discover the crate root (or use cwd) and resolve a cache entry path.
+    ///
+    /// Convenience wrapper for `CacheRoot::discover_or_cwd().cache_path(...)`.
     pub fn discover_cache_path<P: AsRef<Path>, Q: AsRef<Path>>(
         cache_dir: P,
         relative_path: Q,
@@ -124,15 +151,21 @@ impl CacheRoot {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+/// A group (subdirectory) under a `CacheRoot` that manages cache entries.
+///
+/// Use `CacheRoot::group(...)` to construct a `CacheGroup` rooted under a
+/// `CacheRoot`.
 pub struct CacheGroup {
     path: PathBuf,
 }
 
 impl CacheGroup {
+    /// Return the path of this cache group.
     pub fn path(&self) -> &Path {
         &self.path
     }
 
+    /// Ensure the group directory exists on disk, creating parents as needed.
     pub fn ensure_dir(&self) -> io::Result<&Path> {
         fs::create_dir_all(&self.path)?;
         Ok(&self.path)
@@ -155,20 +188,28 @@ impl CacheGroup {
     ///
     /// This does not delete files. The selection order matches the internal
     /// order used by `ensure_dir_with_policy`.
+    /// Return a report of files that would be evicted by `policy`.
+    ///
+    /// The report is non-destructive and mirrors the selection used by
+    /// `ensure_dir_with_policy` so it can be used for previewing or testing.
     pub fn eviction_report(&self, policy: &EvictPolicy) -> io::Result<EvictionReport> {
         build_eviction_report(&self.path, policy)
     }
 
+    /// Create a nested subgroup under this group.
     pub fn subgroup<P: AsRef<Path>>(&self, relative_group: P) -> Self {
         Self {
             path: self.path.join(relative_group.as_ref()),
         }
     }
 
+    /// Resolve a relative entry path under this group.
     pub fn entry_path<P: AsRef<Path>>(&self, relative_file: P) -> PathBuf {
         self.path.join(relative_file.as_ref())
     }
 
+    /// Create or update (touch) a file under this group, creating parent
+    /// directories as needed. Returns the absolute path to the entry.
     pub fn touch<P: AsRef<Path>>(&self, relative_file: P) -> io::Result<PathBuf> {
         let entry = self.entry_path(relative_file);
         if let Some(parent) = entry.parent() {
