@@ -33,7 +33,7 @@ cache entries stored in that directory.
 
 Discover a cache path for the current crate/workspace and resolve an entry path.
 
-Note: `discover_cache_path` only computes a filesystem path — it does not
+> Note: `discover_cache_path` only computes a filesystem path — it does not
 create directories or files. Behavior:
 
 - Searches upward from the current working directory for a `Cargo.toml` and
@@ -68,7 +68,7 @@ assert_eq!(kept, absolute);
 - **Create dirs + optional eviction:** `CacheRoot::ensure_group_with_policy`, `CacheGroup::ensure_dir_with_policy`
 - **Create file (creates parents as needed):** `CacheGroup::touch`
 
-Note: eviction only runs when you pass a policy to the `*_with_policy` methods.
+> Note: eviction only runs when you pass a policy to the `*_with_policy` methods.
 
 ### Eviction Policy
 
