@@ -65,10 +65,10 @@ Note: `discover_cache_path` only computes a filesystem path — it does not
 create directories or files. Behavior:
 
 - Searches upward from the current working directory for a `Cargo.toml` and
-	uses that crate root when found; otherwise it falls back to the current
-	working directory.
+  uses that crate root when found; otherwise it falls back to the current
+  working directory.
 - The discovered root is canonicalized when possible to avoid surprising
-	differences between logically-equal paths.
+  differences between logically-equal paths.
 - If the `relative_path` argument is absolute, it is returned unchanged.
 
 ```rust
