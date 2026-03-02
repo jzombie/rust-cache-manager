@@ -458,6 +458,11 @@ mod tests {
         let p = CacheRoot::discover_cache_path(".cache", "taxonomy/taxonomy_cache.json");
         let parent = p.parent().expect("cache path parent");
         fs::create_dir_all(parent).expect("create cache parent");
+        // Ensure the expected (non-canonicalized) parent path also exists
+        // so canonicalization succeeds on platforms where temporary paths
+        // may differ from the discovered/canonicalized root.
+        let expected_dir = crate_root.join(".cache").join("taxonomy");
+        fs::create_dir_all(&expected_dir).expect("create expected cache parent");
         let got_parent = p
             .parent()
             .expect("cache path parent")
