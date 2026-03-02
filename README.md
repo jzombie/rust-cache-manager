@@ -17,7 +17,7 @@ It is suitable for:
 
 ## Usage
 
-Basic examples showing common operations:
+Basic terminology and examples showing common operations:
 
 ### CacheRoot
 
