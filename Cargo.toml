@@ -1,0 +1,20 @@
+[package]
+name = "cache-manager"
+version = "0.1.0"
+edition = "2024"
+description = "Directory-based file cache utility with crate-root discovery and grouped subdirectories"
+license = "MIT OR Apache-2.0"
+categories = ["development-tools", "utilities", "software-development"]
+keywords = [
+    "cache",
+    "cache-manager",
+    "artifact-cache",
+    "eviction-policy",
+    "filesystem",
+    "workspace",
+]
+
+[dependencies]
+
+[dev-dependencies]
+tempfile = "3.25.0"
