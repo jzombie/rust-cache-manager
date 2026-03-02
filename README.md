@@ -75,8 +75,7 @@ println!("{}", entry_without_touch.display());
 
 Discover a cache path for the current crate/workspace and resolve an entry path.
 
-> Note: `from_discovery().cache_path(...)` only computes a filesystem path — it does not
-> create directories or files.
+> Note: `CacheRoot::from_discovery()?.cache_path(...)` only computes a filesystem path — it does not create directories or files.
 
 Behavior:
 
