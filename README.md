@@ -27,9 +27,10 @@ It is suitable for:
 
 ### Quick start
 
+Using `touch` (convenient when you want this crate to create the file):
+
 ```rust
 use cache_manager::CacheRoot;
-use std::fs;
 
 let root = CacheRoot::from_root("/tmp/project");
 let group = root.group("artifacts/json");
@@ -38,13 +39,21 @@ let group = root.group("artifacts/json");
 group.ensure_dir().expect("ensure group");
 
 // `index.bin` is just an example artifact filename that another program might generate.
-// Option A: use `touch` to create/update the file (and parent directories) for you.
 let entry: std::path::PathBuf = group.touch("v1/index.bin").expect("touch entry");
 println!("{}", entry.display());
+```
 
-// -----
+Without `touch` (compute from `group.path()` and write with your own I/O):
 
-// Option B: don't use `touch` at all; work directly from `group.path()`.
+```rust
+use cache_manager::CacheRoot;
+use std::fs;
+
+let root = CacheRoot::from_root("/tmp/project");
+let group = root.group("artifacts/json");
+
+group.ensure_dir().expect("ensure group");
+
 let entry_without_touch = group.path().join("v1/index.bin");
 fs::create_dir_all(entry_without_touch.parent().expect("entry parent"))
 	.expect("create entry parent");
