@@ -17,17 +17,49 @@ It is suitable for:
 
 ## Usage
 
-Basic terminology and examples showing common operations:
+### Mental model: root -> groups -> entries
 
-### CacheRoot
+- `CacheRoot`: project/workspace anchor path.
+- `CacheGroup`: subdirectory under a root where a class of cache files lives.
+- Entries: files under a group (for example `v1/index.bin`).
 
-The primary root type is `CacheRoot`, which represents a filesystem root
-under which cache groups (`CacheGroup`) live.
+`CacheRoot` and `CacheGroup` are lightweight path objects. Constructing them does not create directories.
 
-### CacheGroup
+### Quick start
 
-A `CacheGroup` represents a subdirectory under a `CacheRoot` and manages
-cache entries stored in that directory.
+```rust
+use cache_manager::CacheRoot;
+use std::fs;
+
+let root = CacheRoot::from_root("/tmp/project");
+let group = root.group("artifacts/json");
+
+// Create the group directory if needed.
+group.ensure_dir().expect("ensure group");
+
+// `index.bin` is just an example artifact filename that another program might generate.
+// Option A: use `touch` to create/update the file (and parent directories) for you.
+let entry: std::path::PathBuf = group.touch("v1/index.bin").expect("touch entry");
+println!("{}", entry.display());
+
+// -----
+
+// Option B: don't use `touch` at all; work directly from `group.path()`.
+let entry_without_touch = group.path().join("v1/index.bin");
+fs::create_dir_all(entry_without_touch.parent().expect("entry parent"))
+	.expect("create entry parent");
+fs::write(&entry_without_touch, b"artifact bytes").expect("write artifact");
+println!("{}", entry_without_touch.display());
+```
+
+### Filesystem effects
+
+- **Pure path operations:** `CacheRoot::from_root`, `CacheRoot::discover_cache_path`, `CacheRoot::cache_path`, `CacheRoot::group`, `CacheGroup::entry_path`, `CacheGroup::subgroup`
+- **Create dirs:** `CacheRoot::ensure_group`, `CacheGroup::ensure_dir`
+- **Create dirs + optional eviction:** `CacheRoot::ensure_group_with_policy`, `CacheGroup::ensure_dir_with_policy`
+- **Create file (creates parents):** `CacheGroup::touch`
+
+> Note: eviction only runs when you pass a policy to the `*_with_policy` methods.
 
 ### Discovering cache paths
 
@@ -63,15 +95,6 @@ let kept = CacheRoot::discover_cache_path(".cache", &absolute);
 assert_eq!(kept, absolute);
 ```
 
-**Filesystem effects**
-
-- **Pure (no I/O):** `CacheRoot::discover`, `CacheRoot::discover_cache_path`, `CacheRoot::cache_path`, `CacheRoot::group`, `CacheGroup::entry_path`, `CacheGroup::subgroup`
-- **Create dirs:** `CacheRoot::ensure_group`, `CacheGroup::ensure_dir`
-- **Create dirs + optional eviction:** `CacheRoot::ensure_group_with_policy`, `CacheGroup::ensure_dir_with_policy`
-- **Create file (creates parents as needed):** `CacheGroup::touch`
-
-> Note: eviction only runs when you pass a policy to the `*_with_policy` methods.
-
 ### Eviction Policy
 
 Use `EvictPolicy` with:
@@ -104,7 +127,7 @@ For `max_files` and `max_bytes`, files are evicted oldest-first by modified time
 - Directories are not counted as bytes.
 - Enforcement happens only during policy-aware `ensure_*_with_policy` calls (not continuously in the background).
 
-### More examples
+### Additional examples
 
 Create a `CacheRoot` from an explicit path and apply an eviction policy to a group:
 
@@ -154,13 +177,13 @@ let entry = group.touch("v1/index.bin").expect("touch entry");
 println!("touched: {}", entry.display());
 ```
 
-Per-subdirectory policies
+#### Per-subdirectory policies
 
 Different subdirectories under the same `CacheRoot` can use independent policies; call `ensure_dir_with_policy` on each `CacheGroup` separately to apply per-group rules.
 
 Note: calling `CacheGroup::ensure_dir()` is equivalent to `CacheGroup::ensure_dir_with_policy(None)`. Likewise, `CacheRoot::ensure_group(...)` behaves the same as `CacheRoot::ensure_group_with_policy(..., None)`.
 
-Get the root path
+#### Get the root path
 
 To obtain the underlying filesystem path for a `CacheRoot`, use `path()`:
 
