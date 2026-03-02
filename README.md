@@ -1,6 +1,6 @@
 # cache-manager
 
-[![made-with-rust][rust-logo]][rust-src-page]
+[![made-with-rust][rust-logo]][rust-src-page] [![crates.io][crates-badge]][crates-page] [![MIT licensed][mit-license-badge]][mit-license-page] [![Apache 2.0 licensed][apache-2.0-license-badge]][apache-2.0-license-page] [![Coverage][coveralls-badge]][coveralls-page]
 
 Directory-based cache and artifact path management with crate-root discovery, grouped cache paths, and optional eviction on directory initialization.
 
@@ -53,3 +53,15 @@ See [LICENSE-APACHE](./LICENSE-APACHE) and [LICENSE-MIT](./LICENSE-MIT) for deta
 
 [rust-src-page]: https://www.rust-lang.org/
 [rust-logo]: https://img.shields.io/badge/Made%20with-Rust-black
+
+[crates-page]: https://crates.io/crates/cache-manager
+[crates-badge]: https://img.shields.io/crates/v/cache-manager.svg
+
+[mit-license-page]: ./LICENSE-MIT
+[mit-license-badge]: https://img.shields.io/badge/license-MIT-blue.svg
+
+[apache-2.0-license-page]: ./LICENSE-APACHE
+[apache-2.0-license-badge]: https://img.shields.io/badge/license-Apache%202.0-blue.svg
+
+[coveralls-page]: https://coveralls.io/github/jzombie/rust-cache-manager?branch=main
+[coveralls-badge]: https://img.shields.io/coveralls/github/jzombie/rust-cache-manager
