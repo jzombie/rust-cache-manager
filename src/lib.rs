@@ -373,26 +373,11 @@ mod tests {
             // races with other tests that also change the CWD.
             let cwd_lock_guard = cwd_lock().lock().expect("acquire cwd test lock");
             let previous = env::current_dir()?;
-            // Try to switch to `path`. If that fails, attempt to canonicalize
-            // the path and try again (helps on platforms where the tempdir
-            // representation differs or when symlinks are involved).
-            match env::set_current_dir(path) {
-                Ok(()) => Ok(Self {
-                    previous,
-                    _cwd_lock: cwd_lock_guard,
-                }),
-                Err(e) => {
-                    if let Ok(canon) = path.canonicalize() {
-                        env::set_current_dir(&canon)?;
-                        Ok(Self {
-                            previous,
-                            _cwd_lock: cwd_lock_guard,
-                        })
-                    } else {
-                        Err(e)
-                    }
-                }
-            }
+            env::set_current_dir(path)?;
+            Ok(Self {
+                previous,
+                _cwd_lock: cwd_lock_guard,
+            })
         }
     }
 
@@ -484,6 +469,15 @@ mod tests {
         assert_eq!(touched_again, touched);
         let meta_again = fs::metadata(&touched_again).expect("metadata again");
         assert_eq!(meta_again.len(), 0);
+    }
+
+    #[test]
+    fn touch_with_root_group_and_empty_relative_path_errors() {
+        let root = CacheRoot::from_root("/");
+        let group = root.group("");
+
+        let result = group.touch("");
+        assert!(result.is_err());
     }
 
     #[test]
@@ -799,5 +793,151 @@ mod tests {
 
         let reports_files = collect_files(reports.path()).expect("collect reports files");
         assert_eq!(reports_files.len(), 1);
+    }
+
+    #[test]
+    fn group_path_and_ensure_group_create_expected_directory() {
+        let tmp = TempDir::new().expect("tempdir");
+        let cache = CacheRoot::from_root(tmp.path());
+
+        let expected = tmp.path().join("a/b/c");
+        assert_eq!(cache.group_path("a/b/c"), expected);
+
+        let ensured = cache.ensure_group("a/b/c").expect("ensure group");
+        assert_eq!(ensured, expected);
+        assert!(ensured.is_dir());
+    }
+
+    #[test]
+    fn ensure_group_with_policy_applies_eviction_rules() {
+        let tmp = TempDir::new().expect("tempdir");
+        let cache = CacheRoot::from_root(tmp.path());
+
+        cache
+            .ensure_group_with_policy("artifacts", None)
+            .expect("ensure group without policy");
+
+        let group = cache.group("artifacts");
+        fs::write(group.entry_path("a.bin"), vec![1u8; 1]).expect("write a");
+        fs::write(group.entry_path("b.bin"), vec![1u8; 1]).expect("write b");
+        fs::write(group.entry_path("c.bin"), vec![1u8; 1]).expect("write c");
+
+        let policy = EvictPolicy {
+            max_files: Some(1),
+            ..EvictPolicy::default()
+        };
+
+        let ensured = cache
+            .ensure_group_with_policy("artifacts", Some(&policy))
+            .expect("ensure group with policy");
+        assert_eq!(ensured, group.path());
+
+        let files = collect_files(group.path()).expect("collect files");
+        assert_eq!(files.len(), 1);
+    }
+
+    #[test]
+    fn cache_path_joins_relative_paths_under_group() {
+        let tmp = TempDir::new().expect("tempdir");
+        let cache = CacheRoot::from_root(tmp.path());
+
+        let got = cache.cache_path(".cache", "tool/v1/data.bin");
+        let expected = tmp
+            .path()
+            .join(".cache")
+            .join("tool")
+            .join("v1")
+            .join("data.bin");
+        assert_eq!(got, expected);
+    }
+
+    #[test]
+    fn subgroup_touch_creates_parent_directories() {
+        let tmp = TempDir::new().expect("tempdir");
+        let cache = CacheRoot::from_root(tmp.path());
+        let subgroup = cache.group("artifacts").subgroup("json/v1");
+
+        let touched = subgroup
+            .touch("nested/output.bin")
+            .expect("touch subgroup entry");
+
+        assert!(touched.is_file());
+        assert!(subgroup.path().join("nested").is_dir());
+    }
+
+    #[test]
+    fn eviction_report_errors_when_group_directory_is_missing() {
+        let tmp = TempDir::new().expect("tempdir");
+        let cache = CacheRoot::from_root(tmp.path());
+        let missing = cache.group("does-not-exist");
+
+        let err = missing
+            .eviction_report(&EvictPolicy::default())
+            .expect_err("eviction report should fail for missing directory");
+        assert_eq!(err.kind(), io::ErrorKind::NotFound);
+    }
+
+    #[test]
+    fn eviction_policy_scans_nested_subdirectories_recursively() {
+        let tmp = TempDir::new().expect("tempdir");
+        let cache = CacheRoot::from_root(tmp.path());
+        let group = cache.group("artifacts");
+        group.ensure_dir().expect("ensure dir");
+
+        fs::create_dir_all(group.entry_path("nested/deeper")).expect("create nested dirs");
+        fs::write(group.entry_path("root.bin"), vec![1u8; 1]).expect("write root");
+        fs::write(group.entry_path("nested/a.bin"), vec![1u8; 1]).expect("write nested a");
+        fs::write(group.entry_path("nested/deeper/b.bin"), vec![1u8; 1]).expect("write nested b");
+
+        let policy = EvictPolicy {
+            max_files: Some(1),
+            ..EvictPolicy::default()
+        };
+
+        group
+            .ensure_dir_with_policy(Some(&policy))
+            .expect("apply recursive policy");
+
+        let remaining = collect_files(group.path()).expect("collect remaining");
+        assert_eq!(remaining.len(), 1);
+    }
+
+    #[test]
+    fn max_bytes_policy_under_threshold_does_not_evict() {
+        let tmp = TempDir::new().expect("tempdir");
+        let cache = CacheRoot::from_root(tmp.path());
+        let group = cache.group("artifacts");
+        group.ensure_dir().expect("ensure dir");
+
+        fs::write(group.entry_path("a.bin"), vec![1u8; 2]).expect("write a");
+        fs::write(group.entry_path("b.bin"), vec![1u8; 3]).expect("write b");
+
+        let policy = EvictPolicy {
+            max_bytes: Some(10),
+            ..EvictPolicy::default()
+        };
+
+        let report = group.eviction_report(&policy).expect("eviction report");
+        assert!(report.marked_for_eviction.is_empty());
+
+        group
+            .ensure_dir_with_policy(Some(&policy))
+            .expect("ensure with policy");
+
+        let files = collect_files(group.path()).expect("collect files");
+        assert_eq!(files.len(), 2);
+    }
+
+    #[test]
+    fn cwd_guard_swap_to_returns_error_for_missing_directory() {
+        let tmp = TempDir::new().expect("tempdir");
+        let missing = tmp.path().join("missing-dir");
+
+        let result = CwdGuard::swap_to(&missing);
+        assert!(result.is_err());
+        assert_eq!(
+            result.err().expect("expected missing-dir error").kind(),
+            io::ErrorKind::NotFound
+        );
     }
 }

@@ -4,9 +4,7 @@
 
 Directory-based cache and artifact path management with crate-root discovery, grouped cache paths, and optional eviction on directory initialization.
 
-**This crate is intentionally tool-agnostic** — it only manages cache/artifact directory layout and paths and does not assume or depend on any specific consumer tooling. Any tool or library may use it to discover, create, and evict files in project-scoped cache directories.
-
-If your utility reads or writes files at all, it can use `cache-manager` to compute and manage cache paths and apply eviction rules — the crate makes no assumptions about how callers read or write those files.
+**This crate is intentionally tool-agnostic** — it only manages cache/artifact directory layout and paths and does not assume or depend on any specific consumer tooling. Any tool or library that reads or writes files can use `cache-manager` to compute/manage project-scoped cache paths and apply eviction rules.
 
 **It has zero runtime dependencies (standard library only for library consumers).**
 
@@ -19,18 +17,26 @@ It is suitable for:
 
 ## Usage
 
-Basic examples showing common operations:
+Basic terminology and examples showing common operations:
+
+### CacheRoot
 
 The primary root type is `CacheRoot`, which represents a filesystem root
 under which cache groups (`CacheGroup`) live.
 
+### CacheGroup
+
 A `CacheGroup` represents a subdirectory under a `CacheRoot` and manages
 cache entries stored in that directory.
 
+### Discovering cache paths
+
 Discover a cache path for the current crate/workspace and resolve an entry path.
 
-Note: `discover_cache_path` only computes a filesystem path — it does not
-create directories or files. Behavior:
+> Note: `discover_cache_path` only computes a filesystem path — it does not
+> create directories or files.
+
+Behavior:
 
 - Searches upward from the current working directory for a `Cargo.toml` and
   uses that crate root when found; otherwise it falls back to the current
@@ -64,7 +70,7 @@ assert_eq!(kept, absolute);
 - **Create dirs + optional eviction:** `CacheRoot::ensure_group_with_policy`, `CacheGroup::ensure_dir_with_policy`
 - **Create file (creates parents as needed):** `CacheGroup::touch`
 
-Note: eviction only runs when you pass a policy to the `*_with_policy` methods.
+> Note: eviction only runs when you pass a policy to the `*_with_policy` methods.
 
 ### Eviction Policy
 
@@ -178,7 +184,6 @@ println!("group path: {}", group_path.display());
 let entry_path = group.entry_path("v1/index.bin");
 println!("entry path: {}", entry_path.display());
 ```
-
 
 ## License
 
