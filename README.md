@@ -13,6 +13,8 @@ It is suitable for:
 - Artifact storage (build outputs, generated files, intermediate data, etc.).
 - Monorepos or multi-crate workspaces that need centralized cache/artifact management via a shared root (for example with `CacheRoot::from_root(...)`).
 
+> Tested on macOS, Linux, and Windows.
+
 ## Eviction Policy
 
 Use `EvictPolicy` with:
