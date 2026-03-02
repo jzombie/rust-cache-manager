@@ -34,7 +34,9 @@ cache entries stored in that directory.
 Discover a cache path for the current crate/workspace and resolve an entry path.
 
 > Note: `discover_cache_path` only computes a filesystem path — it does not
-create directories or files. Behavior:
+create directories or files.
+
+Behavior:
 
 - Searches upward from the current working directory for a `Cargo.toml` and
   uses that crate root when found; otherwise it falls back to the current
