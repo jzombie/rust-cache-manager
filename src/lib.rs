@@ -338,24 +338,56 @@ fn collect_files_recursive(dir: &Path, out: &mut Vec<FileEntry>) -> io::Result<(
 mod tests {
     use super::*;
     use std::collections::BTreeSet;
+    // Serialize tests that mutate the process working directory.
+    //
+    // Many unit tests temporarily call `env::set_current_dir` to exercise
+    // discovery behavior. Because the process CWD is global, those tests
+    // can race when run in parallel and cause flaky failures (different
+    // tests observing different CWDs). We use a global `Mutex<()>` to
+    // serialize CWD-changing tests so they run one at a time.
+    use std::sync::{Mutex, MutexGuard, OnceLock};
     use tempfile::TempDir;
 
+    /// Return the global mutex used to serialize tests that change the
+    /// process current working directory. Stored in a `OnceLock` so it is
+    /// initialized on first use and lives for the duration of the process.
+    fn cwd_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
+
+    /// Test helper that temporarily changes the process current working
+    /// directory and restores it when dropped. While alive it also holds
+    /// the global `cwd_lock()` so no two tests can race by changing the
+    /// CWD concurrently.
     struct CwdGuard {
         previous: PathBuf,
+        // Hold the guard so the lock remains taken for the lifetime of
+        // this `CwdGuard` instance.
+        _cwd_lock: MutexGuard<'static, ()>,
     }
 
     impl CwdGuard {
         fn swap_to(path: &Path) -> io::Result<Self> {
+            // Acquire the global lock before mutating the CWD to avoid
+            // races with other tests that also change the CWD.
+            let cwd_lock_guard = cwd_lock().lock().expect("acquire cwd test lock");
             let previous = env::current_dir()?;
             // Try to switch to `path`. If that fails, attempt to canonicalize
             // the path and try again (helps on platforms where the tempdir
             // representation differs or when symlinks are involved).
             match env::set_current_dir(path) {
-                Ok(()) => Ok(Self { previous }),
+                Ok(()) => Ok(Self {
+                    previous,
+                    _cwd_lock: cwd_lock_guard,
+                }),
                 Err(e) => {
                     if let Ok(canon) = path.canonicalize() {
                         env::set_current_dir(&canon)?;
-                        Ok(Self { previous })
+                        Ok(Self {
+                            previous,
+                            _cwd_lock: cwd_lock_guard,
+                        })
                     } else {
                         Err(e)
                     }
