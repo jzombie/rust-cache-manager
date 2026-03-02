@@ -338,24 +338,56 @@ fn collect_files_recursive(dir: &Path, out: &mut Vec<FileEntry>) -> io::Result<(
 mod tests {
     use super::*;
     use std::collections::BTreeSet;
+    // Serialize tests that mutate the process working directory.
+    //
+    // Many unit tests temporarily call `env::set_current_dir` to exercise
+    // discovery behavior. Because the process CWD is global, those tests
+    // can race when run in parallel and cause flaky failures (different
+    // tests observing different CWDs). We use a global `Mutex<()>` to
+    // serialize CWD-changing tests so they run one at a time.
+    use std::sync::{Mutex, MutexGuard, OnceLock};
     use tempfile::TempDir;
 
+    /// Return the global mutex used to serialize tests that change the
+    /// process current working directory. Stored in a `OnceLock` so it is
+    /// initialized on first use and lives for the duration of the process.
+    fn cwd_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
+
+    /// Test helper that temporarily changes the process current working
+    /// directory and restores it when dropped. While alive it also holds
+    /// the global `cwd_lock()` so no two tests can race by changing the
+    /// CWD concurrently.
     struct CwdGuard {
         previous: PathBuf,
+        // Hold the guard so the lock remains taken for the lifetime of
+        // this `CwdGuard` instance.
+        _cwd_lock: MutexGuard<'static, ()>,
     }
 
     impl CwdGuard {
         fn swap_to(path: &Path) -> io::Result<Self> {
+            // Acquire the global lock before mutating the CWD to avoid
+            // races with other tests that also change the CWD.
+            let cwd_lock_guard = cwd_lock().lock().expect("acquire cwd test lock");
             let previous = env::current_dir()?;
             // Try to switch to `path`. If that fails, attempt to canonicalize
             // the path and try again (helps on platforms where the tempdir
             // representation differs or when symlinks are involved).
             match env::set_current_dir(path) {
-                Ok(()) => Ok(Self { previous }),
+                Ok(()) => Ok(Self {
+                    previous,
+                    _cwd_lock: cwd_lock_guard,
+                }),
                 Err(e) => {
                     if let Ok(canon) = path.canonicalize() {
                         env::set_current_dir(&canon)?;
-                        Ok(Self { previous })
+                        Ok(Self {
+                            previous,
+                            _cwd_lock: cwd_lock_guard,
+                        })
                     } else {
                         Err(e)
                     }
@@ -632,6 +664,95 @@ mod tests {
 
         let files = collect_files(group.path()).expect("collect files");
         assert_eq!(files.len(), 2);
+    }
+
+    #[test]
+    fn eviction_policy_applies_in_documented_order() {
+        let tmp = TempDir::new().expect("tempdir");
+        let cache = CacheRoot::from_root(tmp.path());
+        let group = cache.group("artifacts");
+        group.ensure_dir().expect("ensure dir");
+
+        fs::write(group.entry_path("old.txt"), vec![1u8; 1]).expect("write old");
+
+        std::thread::sleep(Duration::from_millis(300));
+
+        fs::write(group.entry_path("b.bin"), vec![1u8; 7]).expect("write b");
+        fs::write(group.entry_path("c.bin"), vec![1u8; 6]).expect("write c");
+        fs::write(group.entry_path("d.bin"), vec![1u8; 1]).expect("write d");
+
+        let policy = EvictPolicy {
+            max_age: Some(Duration::from_millis(200)),
+            max_files: Some(2),
+            max_bytes: Some(5),
+        };
+
+        let report = group.eviction_report(&policy).expect("eviction report");
+        let evicted_names: Vec<String> = report
+            .marked_for_eviction
+            .iter()
+            .map(|path| {
+                path.file_name()
+                    .and_then(|name| name.to_str())
+                    .expect("evicted file name")
+                    .to_string()
+            })
+            .collect();
+
+        assert_eq!(evicted_names, vec!["old.txt", "b.bin", "c.bin"]);
+
+        group
+            .ensure_dir_with_policy(Some(&policy))
+            .expect("apply policy");
+
+        let remaining_names: BTreeSet<String> = collect_files(group.path())
+            .expect("collect remaining")
+            .into_iter()
+            .map(|entry| {
+                entry
+                    .path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .expect("remaining file name")
+                    .to_string()
+            })
+            .collect();
+
+        assert_eq!(remaining_names, BTreeSet::from(["d.bin".to_string()]));
+    }
+
+    #[test]
+    fn sort_entries_uses_path_as_tie_break_for_equal_modified_time() {
+        let same_time = UNIX_EPOCH + Duration::from_secs(1_234_567);
+        let mut entries = vec![
+            FileEntry {
+                path: PathBuf::from("z.bin"),
+                modified: same_time,
+                len: 1,
+            },
+            FileEntry {
+                path: PathBuf::from("a.bin"),
+                modified: same_time,
+                len: 1,
+            },
+            FileEntry {
+                path: PathBuf::from("m.bin"),
+                modified: same_time,
+                len: 1,
+            },
+        ];
+
+        sort_entries_oldest_first(&mut entries);
+
+        let ordered_paths: Vec<PathBuf> = entries.into_iter().map(|entry| entry.path).collect();
+        assert_eq!(
+            ordered_paths,
+            vec![
+                PathBuf::from("a.bin"),
+                PathBuf::from("m.bin"),
+                PathBuf::from("z.bin")
+            ]
+        );
     }
 
     #[test]
