@@ -112,11 +112,78 @@ Use `EvictPolicy` with:
 - `CacheRoot::ensure_group_with_policy(...)`
 - `CacheGroup::eviction_report(...)` to preview which files would be evicted.
 
+Apply policy directly to a `CacheGroup`:
+
+```rust
+use cache_manager::{CacheRoot, EvictPolicy};
+
+let root = CacheRoot::from_root("/tmp/project");
+let group = root.group("artifacts");
+
+let policy = EvictPolicy {
+	max_files: Some(100),
+	..Default::default()
+};
+
+group
+	.ensure_dir_with_policy(Some(&policy))
+	.expect("ensure and evict");
+```
+
+Apply policy through `CacheRoot` convenience API:
+
+```rust
+use cache_manager::{CacheRoot, EvictPolicy};
+use std::time::Duration;
+
+let root = CacheRoot::from_root("/tmp/project");
+let policy = EvictPolicy {
+	max_age: Some(Duration::from_secs(60 * 60 * 24 * 30)), // 30 days
+	..Default::default()
+};
+
+root
+	.ensure_group_with_policy("artifacts", Some(&policy))
+	.expect("ensure group and evict");
+```
+
+Preview evictions without deleting files:
+
+```rust
+use cache_manager::{CacheRoot, EvictPolicy};
+
+let root = CacheRoot::from_root("/tmp/project");
+let group = root.group("artifacts");
+let policy = EvictPolicy {
+	max_bytes: Some(10_000_000),
+	..Default::default()
+};
+
+let report = group.eviction_report(&policy).expect("eviction report");
+for path in report.marked_for_eviction {
+	println!("would remove: {}", path.display());
+}
+```
+
 Policy fields:
 
 - `max_age`: remove files older than or equal to the age threshold.
 - `max_files`: keep at most N files.
 - `max_bytes`: keep total file bytes at or below the threshold.
+
+Policies can be combined by setting multiple fields in one `EvictPolicy`.
+When combined, all configured limits are enforced in order.
+
+```rust
+use cache_manager::EvictPolicy;
+use std::time::Duration;
+
+let combined = EvictPolicy {
+	max_age: Some(Duration::from_secs(60 * 60 * 24 * 30)), // 30 days
+	max_files: Some(200),
+	max_bytes: Some(500 * 1024 * 1024), // 500 MB
+};
+```
 
 Eviction order is always:
 
