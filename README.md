@@ -22,14 +22,17 @@ It is suitable for:
 Basic examples showing common operations:
 
 ### CacheRoot
+
 The primary root type is `CacheRoot`, which represents a filesystem root
 under which cache groups (`CacheGroup`) live.
 
 ### CacheGroup
+
 A `CacheGroup` represents a subdirectory under a `CacheRoot` and manages
 cache entries stored in that directory.
 
 ### Discovering cache paths
+
 Discover a cache path for the current crate/workspace and resolve an entry path.
 
 Note: `discover_cache_path` only computes a filesystem path — it does not
@@ -59,6 +62,49 @@ let absolute = std::path::PathBuf::from("/tmp/custom/cache.json");
 let kept = CacheRoot::discover_cache_path(".cache", &absolute);
 assert_eq!(kept, absolute);
 ```
+
+**Filesystem effects**
+
+- **Pure (no I/O):** `CacheRoot::discover`, `CacheRoot::discover_cache_path`, `CacheRoot::cache_path`, `CacheRoot::group`, `CacheGroup::entry_path`, `CacheGroup::subgroup`
+- **Create dirs:** `CacheRoot::ensure_group`, `CacheGroup::ensure_dir`
+- **Create dirs + optional eviction:** `CacheRoot::ensure_group_with_policy`, `CacheGroup::ensure_dir_with_policy`
+- **Create file (creates parents as needed):** `CacheGroup::touch`
+
+Note: eviction only runs when you pass a policy to the `*_with_policy` methods.
+
+### Eviction Policy
+
+Use `EvictPolicy` with:
+
+- `CacheGroup::ensure_dir_with_policy(...)`
+- `CacheRoot::ensure_group_with_policy(...)`
+- `CacheGroup::eviction_report(...)` to preview which files would be evicted.
+
+Policy fields:
+
+- `max_age`: remove files older than or equal to the age threshold.
+- `max_files`: keep at most N files.
+- `max_bytes`: keep total file bytes at or below the threshold.
+
+Eviction order is always:
+
+1. `max_age`
+2. `max_files`
+3. `max_bytes`
+
+For `max_files` and `max_bytes`, files are evicted oldest-first by modified time (ascending), then by path for deterministic tie-breaking.
+
+`eviction_report(...)` and `ensure_*_with_policy(...)` use the same selection logic.
+
+#### How `max_bytes` works
+
+- Scans regular files recursively under the managed directory.
+- Sums `metadata.len()` across those files.
+- If total exceeds `max_bytes`, removes files oldest-first until total is `<= max_bytes`.
+- Directories are not counted as bytes.
+- Enforcement happens only during policy-aware `ensure_*_with_policy` calls (not continuously in the background).
+
+### More examples
 
 **Filesystem effects**
 
