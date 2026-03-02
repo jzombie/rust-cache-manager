@@ -21,12 +21,15 @@ It is suitable for:
 
 Basic examples showing common operations:
 
+### CacheRoot
 The primary root type is `CacheRoot`, which represents a filesystem root
 under which cache groups (`CacheGroup`) live.
 
+### CacheGroup
 A `CacheGroup` represents a subdirectory under a `CacheRoot` and manages
 cache entries stored in that directory.
 
+### Discovering cache paths
 Discover a cache path for the current crate/workspace and resolve an entry path.
 
 Note: `discover_cache_path` only computes a filesystem path — it does not
