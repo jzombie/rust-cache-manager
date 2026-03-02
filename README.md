@@ -77,6 +77,8 @@ use cache_manager::CacheRoot;
 // Compute a path like <crate-root>/.cache/tool/data.bin without creating it.
 let cache_path = CacheRoot::discover_cache_path(".cache", "tool/data.bin");
 println!("cache path: {}", cache_path.display());
+// The call only computes the path; it does not create files or directories.
+assert!(!cache_path.exists());
 
 // If you already have an absolute entry path, it's returned unchanged:
 let absolute = std::path::PathBuf::from("/tmp/custom/cache.json");
@@ -84,6 +86,14 @@ let kept = CacheRoot::discover_cache_path(".cache", &absolute);
 assert_eq!(kept, absolute);
 ```
 
+**Filesystem effects**
+
+- **Pure (no I/O):** `CacheRoot::discover`, `CacheRoot::discover_cache_path`, `CacheRoot::cache_path`, `CacheRoot::group`, `CacheGroup::entry_path`, `CacheGroup::subgroup`
+- **Create dirs:** `CacheRoot::ensure_group`, `CacheGroup::ensure_dir`
+- **Create dirs + optional eviction:** `CacheRoot::ensure_group_with_policy`, `CacheGroup::ensure_dir_with_policy`
+- **Create file (creates parents as needed):** `CacheGroup::touch`
+
+Note: eviction only runs when you pass a policy to the `*_with_policy` methods.
 Create a `CacheRoot` from an explicit path and apply an eviction policy to a group:
 
 ```rust
