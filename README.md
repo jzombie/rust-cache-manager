@@ -17,38 +17,6 @@ It is suitable for:
 
 > Tested on macOS, Linux, and Windows.
 
-## Eviction Policy
-
-Use `EvictPolicy` with:
-
-- `CacheGroup::ensure_dir_with_policy(...)`
-- `CacheRoot::ensure_group_with_policy(...)`
-- `CacheGroup::eviction_report(...)` to preview which files would be evicted.
-
-Policy fields:
-
-- `max_age`: remove files older than or equal to the age threshold.
-- `max_files`: keep at most N files.
-- `max_bytes`: keep total file bytes at or below the threshold.
-
-Eviction order is always:
-
-1. `max_age`
-2. `max_files`
-3. `max_bytes`
-
-For `max_files` and `max_bytes`, files are evicted oldest-first by modified time (ascending), then by path for deterministic tie-breaking.
-
-`eviction_report(...)` and `ensure_*_with_policy(...)` use the same selection logic.
-
-### How `max_bytes` works
-
-- Scans regular files recursively under the managed directory.
-- Sums `metadata.len()` across those files.
-- If total exceeds `max_bytes`, removes files oldest-first until total is `<= max_bytes`.
-- Directories are not counted as bytes.
-- Enforcement happens only during policy-aware `ensure_*_with_policy` calls (not continuously in the background).
-
 ## Usage
 
 Basic examples showing common operations:
@@ -73,10 +41,13 @@ create directories or files. Behavior:
 
 ```rust
 use cache_manager::CacheRoot;
+use std::path::Path;
 
 // Compute a path like <crate-root>/.cache/tool/data.bin without creating it.
 let cache_path = CacheRoot::discover_cache_path(".cache", "tool/data.bin");
 println!("cache path: {}", cache_path.display());
+// Expected relative location under the discovered crate root:
+assert!(cache_path.ends_with(Path::new(".cache").join("tool").join("data.bin")));
 // The call only computes the path; it does not create files or directories.
 assert!(!cache_path.exists());
 
@@ -94,6 +65,41 @@ assert_eq!(kept, absolute);
 - **Create file (creates parents as needed):** `CacheGroup::touch`
 
 Note: eviction only runs when you pass a policy to the `*_with_policy` methods.
+
+### Eviction Policy
+
+Use `EvictPolicy` with:
+
+- `CacheGroup::ensure_dir_with_policy(...)`
+- `CacheRoot::ensure_group_with_policy(...)`
+- `CacheGroup::eviction_report(...)` to preview which files would be evicted.
+
+Policy fields:
+
+- `max_age`: remove files older than or equal to the age threshold.
+- `max_files`: keep at most N files.
+- `max_bytes`: keep total file bytes at or below the threshold.
+
+Eviction order is always:
+
+1. `max_age`
+2. `max_files`
+3. `max_bytes`
+
+For `max_files` and `max_bytes`, files are evicted oldest-first by modified time (ascending), then by path for deterministic tie-breaking.
+
+`eviction_report(...)` and `ensure_*_with_policy(...)` use the same selection logic.
+
+#### How `max_bytes` works
+
+- Scans regular files recursively under the managed directory.
+- Sums `metadata.len()` across those files.
+- If total exceeds `max_bytes`, removes files oldest-first until total is `<= max_bytes`.
+- Directories are not counted as bytes.
+- Enforcement happens only during policy-aware `ensure_*_with_policy` calls (not continuously in the background).
+
+### More examples
+
 Create a `CacheRoot` from an explicit path and apply an eviction policy to a group:
 
 ```rust

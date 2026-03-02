@@ -635,6 +635,95 @@ mod tests {
     }
 
     #[test]
+    fn eviction_policy_applies_in_documented_order() {
+        let tmp = TempDir::new().expect("tempdir");
+        let cache = CacheRoot::from_root(tmp.path());
+        let group = cache.group("artifacts");
+        group.ensure_dir().expect("ensure dir");
+
+        fs::write(group.entry_path("old.txt"), vec![1u8; 1]).expect("write old");
+
+        std::thread::sleep(Duration::from_millis(300));
+
+        fs::write(group.entry_path("b.bin"), vec![1u8; 7]).expect("write b");
+        fs::write(group.entry_path("c.bin"), vec![1u8; 6]).expect("write c");
+        fs::write(group.entry_path("d.bin"), vec![1u8; 1]).expect("write d");
+
+        let policy = EvictPolicy {
+            max_age: Some(Duration::from_millis(200)),
+            max_files: Some(2),
+            max_bytes: Some(5),
+        };
+
+        let report = group.eviction_report(&policy).expect("eviction report");
+        let evicted_names: Vec<String> = report
+            .marked_for_eviction
+            .iter()
+            .map(|path| {
+                path.file_name()
+                    .and_then(|name| name.to_str())
+                    .expect("evicted file name")
+                    .to_string()
+            })
+            .collect();
+
+        assert_eq!(evicted_names, vec!["old.txt", "b.bin", "c.bin"]);
+
+        group
+            .ensure_dir_with_policy(Some(&policy))
+            .expect("apply policy");
+
+        let remaining_names: BTreeSet<String> = collect_files(group.path())
+            .expect("collect remaining")
+            .into_iter()
+            .map(|entry| {
+                entry
+                    .path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .expect("remaining file name")
+                    .to_string()
+            })
+            .collect();
+
+        assert_eq!(remaining_names, BTreeSet::from(["d.bin".to_string()]));
+    }
+
+    #[test]
+    fn sort_entries_uses_path_as_tie_break_for_equal_modified_time() {
+        let same_time = UNIX_EPOCH + Duration::from_secs(1_234_567);
+        let mut entries = vec![
+            FileEntry {
+                path: PathBuf::from("z.bin"),
+                modified: same_time,
+                len: 1,
+            },
+            FileEntry {
+                path: PathBuf::from("a.bin"),
+                modified: same_time,
+                len: 1,
+            },
+            FileEntry {
+                path: PathBuf::from("m.bin"),
+                modified: same_time,
+                len: 1,
+            },
+        ];
+
+        sort_entries_oldest_first(&mut entries);
+
+        let ordered_paths: Vec<PathBuf> = entries.into_iter().map(|entry| entry.path).collect();
+        assert_eq!(
+            ordered_paths,
+            vec![
+                PathBuf::from("a.bin"),
+                PathBuf::from("m.bin"),
+                PathBuf::from("z.bin")
+            ]
+        );
+    }
+
+    #[test]
     fn single_root_supports_distinct_policies_per_subdirectory() {
         let tmp = TempDir::new().expect("tempdir");
         let cache = CacheRoot::from_root(tmp.path());
