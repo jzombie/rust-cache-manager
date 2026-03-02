@@ -1,6 +1,6 @@
 [package]
 name = "cache-manager"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 description = "Directory-based file cache utility with crate-root discovery and grouped subdirectories"
 license = "MIT OR Apache-2.0"
