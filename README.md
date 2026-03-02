@@ -2,7 +2,7 @@
 
 [![made-with-rust][rust-logo]][rust-src-page] [![crates.io][crates-badge]][crates-page] [![MIT licensed][mit-license-badge]][mit-license-page] [![Apache 2.0 licensed][apache-2.0-license-badge]][apache-2.0-license-page] [![Coverage][coveralls-badge]][coveralls-page]
 
-Directory-based cache and artifact path management with crate-root discovery, grouped cache paths, and optional eviction on directory initialization.
+Directory-based cache and artifact path management with discovered `.cache` roots, grouped cache paths, and optional eviction on directory initialization.
 
 **This crate is intentionally tool-agnostic** — it only manages cache/artifact directory layout and paths and does not assume or depend on any specific consumer tooling. Any tool or library that reads or writes files can use `cache-manager` to compute/manage project-scoped cache paths and apply eviction rules.
 
@@ -63,7 +63,8 @@ println!("{}", entry_without_touch.display());
 
 ### Filesystem effects
 
-- **Pure path operations:** `CacheRoot::from_root`, `CacheRoot::discover_cache_path`, `CacheRoot::cache_path`, `CacheRoot::group`, `CacheGroup::entry_path`, `CacheGroup::subgroup`
+- **Pure path operations:** `CacheRoot::from_root`, `CacheRoot::cache_path`, `CacheRoot::group`, `CacheGroup::entry_path`, `CacheGroup::subgroup`
+- **Discovery helper (cwd/crate-root based):** `CacheRoot::from_discovery`
 - **Create dirs:** `CacheRoot::ensure_group`, `CacheGroup::ensure_dir`
 - **Create dirs + optional eviction:** `CacheRoot::ensure_group_with_policy`, `CacheGroup::ensure_dir_with_policy`
 - **Create file (creates parents):** `CacheGroup::touch`
@@ -74,15 +75,13 @@ println!("{}", entry_without_touch.display());
 
 Discover a cache path for the current crate/workspace and resolve an entry path.
 
-> Note: `discover_cache_path` only computes a filesystem path — it does not
+> Note: `from_discovery().cache_path(...)` only computes a filesystem path — it does not
 > create directories or files.
 
 Behavior:
 
-- Searches upward from the current working directory for a `Cargo.toml` and
-  uses that crate root when found; otherwise it falls back to the current
-  working directory.
-- The discovered root is canonicalized when possible to avoid surprising
+- Searches upward from the current working directory for a `Cargo.toml` and uses `<crate-root>/.cache` when found; otherwise it falls back to `<cwd>/.cache`.
+- The discovered anchor (`crate root` or `cwd`) is canonicalized when possible to avoid surprising
   differences between logically-equal paths.
 - If the `relative_path` argument is absolute, it is returned unchanged.
 
@@ -91,7 +90,9 @@ use cache_manager::CacheRoot;
 use std::path::Path;
 
 // Compute a path like <crate-root>/.cache/tool/data.bin without creating it.
-let cache_path = CacheRoot::discover_cache_path(".cache", "tool/data.bin");
+let cache_path = CacheRoot::from_discovery()
+	.expect("discover cache root")
+	.cache_path("tool", "data.bin");
 println!("cache path: {}", cache_path.display());
 // Expected relative location under the discovered crate root:
 assert!(cache_path.ends_with(Path::new(".cache").join("tool").join("data.bin")));
@@ -100,9 +101,21 @@ assert!(!cache_path.exists());
 
 // If you already have an absolute entry path, it's returned unchanged:
 let absolute = std::path::PathBuf::from("/tmp/custom/cache.json");
-let kept = CacheRoot::discover_cache_path(".cache", &absolute);
+let kept = CacheRoot::from_discovery()
+	.expect("discover cache root")
+	.cache_path("tool", &absolute);
 assert_eq!(kept, absolute);
 ```
+
+**Notes on discovery behavior**
+
+`CacheRoot::from_discovery()` deterministically anchors discovered cache
+paths under the configured `CACHE_DIR_NAME` (default: `.cache`). It does
+not scan for arbitrary directory names — creating a directory named
+`.cache-v2` at the crate root will not cause `from_discovery()` to use it.
+If you want to use a custom cache root, construct it explicitly with
+`CacheRoot::from_root(...)`.
+
 
 ### Eviction Policy
 

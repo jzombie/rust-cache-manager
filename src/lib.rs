@@ -1,12 +1,16 @@
 #![doc = include_str!("../README.md")]
 #![warn(missing_docs)]
 
+mod constants;
+
 use std::env;
 use std::fs;
 use std::fs::OpenOptions;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+use constants::{CACHE_DIR_NAME, CARGO_TOML_FILE_NAME};
 
 /// Optional eviction controls applied by `CacheGroup::ensure_dir_with_policy`
 /// and `CacheRoot::ensure_group_with_policy`.
@@ -58,9 +62,9 @@ struct FileEntry {
 #[derive(Clone, Debug, PartialEq, Eq)]
 /// Represents a discovered or explicit cache root directory.
 ///
-/// Use `CacheRoot::discover()` to find the nearest crate root from the
-/// current working directory, or `CacheRoot::from_root(...)` to construct one
-/// from an explicit path.
+/// Use `CacheRoot::from_discovery()` to find the nearest crate root from the
+/// current working directory and anchor caches under `.cache`, or
+/// `CacheRoot::from_root(...)` to construct one from an explicit path.
 pub struct CacheRoot {
     root: PathBuf,
 }
@@ -68,28 +72,29 @@ pub struct CacheRoot {
 impl CacheRoot {
     /// Discover the cache root by searching parent directories for `Cargo.toml`.
     ///
+    /// The discovered cache root is always `<crate-root-or-cwd>/.cache`.
+    ///
+    /// Note: `from_discovery` only uses the configured `CACHE_DIR_NAME` (by
+    /// default `.cache`) as the discovered cache directory. It does not
+    /// detect or prefer other custom directory names (for example
+    /// `.cache-v2`). To use a non-standard cache root name use
+    /// `CacheRoot::from_root(...)` with an explicit path.
+    ///
     /// Falls back to the current working directory when no crate root is found.
-    pub fn discover() -> io::Result<Self> {
+    pub fn from_discovery() -> io::Result<Self> {
         let cwd = env::current_dir()?;
-        let root = find_crate_root(&cwd).unwrap_or(cwd);
-        // Prefer a canonicalized path when possible to avoid surprising
+        let anchor = find_crate_root(&cwd).unwrap_or(cwd);
+        // Prefer a canonicalized anchor when possible to avoid surprising
         // differences between logically-equal paths (symlinks, tempdir
         // representations, etc.) used by callers and tests.
-        let root = root.canonicalize().unwrap_or(root);
+        let anchor = anchor.canonicalize().unwrap_or(anchor);
+        let root = anchor.join(CACHE_DIR_NAME);
         Ok(Self { root })
     }
 
     /// Create a `CacheRoot` from an explicit filesystem path.
     pub fn from_root<P: Into<PathBuf>>(root: P) -> Self {
         Self { root: root.into() }
-    }
-
-    /// Like `discover()` but never returns an `io::Result` — falls back to `.` on error.
-    pub fn discover_or_cwd() -> Self {
-        let cwd = env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-        let root = find_crate_root(&cwd).unwrap_or(cwd);
-        let root = root.canonicalize().unwrap_or(root);
-        Self { root }
     }
 
     /// Return the underlying path for this `CacheRoot`.
@@ -140,16 +145,6 @@ impl CacheRoot {
             return rel.to_path_buf();
         }
         self.group(cache_dir).entry_path(rel)
-    }
-
-    /// Discover the crate root (or use cwd) and resolve a cache entry path.
-    ///
-    /// Convenience wrapper for `CacheRoot::discover_or_cwd().cache_path(...)`.
-    pub fn discover_cache_path<P: AsRef<Path>, Q: AsRef<Path>>(
-        cache_dir: P,
-        relative_path: Q,
-    ) -> PathBuf {
-        Self::discover_or_cwd().cache_path(cache_dir, relative_path)
     }
 }
 
@@ -225,7 +220,7 @@ impl CacheGroup {
 fn find_crate_root(start: &Path) -> Option<PathBuf> {
     let mut current = start.to_path_buf();
     loop {
-        if current.join("Cargo.toml").is_file() {
+        if current.join(CARGO_TOML_FILE_NAME).is_file() {
             return Some(current);
         }
         if !current.pop() {
@@ -385,38 +380,39 @@ mod tests {
     }
 
     #[test]
-    fn discover_falls_back_to_cwd_when_no_cargo_toml() {
+    fn from_discovery_uses_cwd_dot_cache_when_no_cargo_toml() {
         let tmp = TempDir::new().expect("tempdir");
         let _guard = CwdGuard::swap_to(tmp.path()).expect("set cwd");
 
-        let cache = CacheRoot::discover().expect("discover");
-        let got = cache
+        let cache = CacheRoot::from_discovery().expect("discover");
+        let got = cache.path().to_path_buf();
+        let expected = tmp
             .path()
             .canonicalize()
-            .expect("canonicalize discovered root");
-        let expected = tmp.path().canonicalize().expect("canonicalize temp path");
+            .expect("canonicalize temp path")
+            .join(CACHE_DIR_NAME);
         assert_eq!(got, expected);
     }
 
     #[test]
-    fn discover_prefers_nearest_crate_root() {
+    fn from_discovery_prefers_nearest_crate_root() {
         let tmp = TempDir::new().expect("tempdir");
         let crate_root = tmp.path().join("workspace");
         let nested = crate_root.join("src").join("nested");
         fs::create_dir_all(&nested).expect("create nested");
         fs::write(
-            crate_root.join("Cargo.toml"),
+            crate_root.join(CARGO_TOML_FILE_NAME),
             "[package]\nname='x'\nversion='0.1.0'\nedition='2024'\n",
         )
         .expect("write cargo");
 
         let _guard = CwdGuard::swap_to(&nested).expect("set cwd");
-        let cache = CacheRoot::discover().expect("discover");
-        let got = cache
-            .path()
+        let cache = CacheRoot::from_discovery().expect("discover");
+        let got = cache.path().to_path_buf();
+        let expected = crate_root
             .canonicalize()
-            .expect("canonicalize discovered root");
-        let expected = crate_root.canonicalize().expect("canonicalize crate root");
+            .expect("canonicalize crate root")
+            .join(CACHE_DIR_NAME);
         assert_eq!(got, expected);
     }
 
@@ -478,25 +474,27 @@ mod tests {
     }
 
     #[test]
-    fn discover_cache_path_uses_root_and_group() {
+    fn from_discovery_cache_path_uses_root_and_group() {
         let tmp = TempDir::new().expect("tempdir");
         let crate_root = tmp.path().join("workspace");
         let nested = crate_root.join("src").join("nested");
         fs::create_dir_all(&nested).expect("create nested");
         fs::write(
-            crate_root.join("Cargo.toml"),
+            crate_root.join(CARGO_TOML_FILE_NAME),
             "[package]\nname='x'\nversion='0.1.0'\nedition='2024'\n",
         )
         .expect("write cargo");
 
         let _guard = CwdGuard::swap_to(&nested).expect("set cwd");
-        let p = CacheRoot::discover_cache_path(".cache", "taxonomy/taxonomy_cache.json");
+        let p = CacheRoot::from_discovery()
+            .expect("discover")
+            .cache_path("taxonomy", "taxonomy_cache.json");
         let parent = p.parent().expect("cache path parent");
         fs::create_dir_all(parent).expect("create cache parent");
         // Ensure the expected (non-canonicalized) parent path also exists
         // so canonicalization succeeds on platforms where temporary paths
         // may differ from the discovered/canonicalized root.
-        let expected_dir = crate_root.join(".cache").join("taxonomy");
+        let expected_dir = crate_root.join(CACHE_DIR_NAME).join("taxonomy");
         fs::create_dir_all(&expected_dir).expect("create expected cache parent");
         let got_parent = p
             .parent()
@@ -504,7 +502,7 @@ mod tests {
             .canonicalize()
             .expect("canonicalize cache parent");
         let expected_parent = crate_root
-            .join(".cache")
+            .join(CACHE_DIR_NAME)
             .join("taxonomy")
             .canonicalize()
             .expect("canonicalize expected parent");
@@ -516,10 +514,36 @@ mod tests {
     }
 
     #[test]
+    fn from_discovery_ignores_other_custom_cache_dir_names() {
+        let tmp = TempDir::new().expect("tempdir");
+        let crate_root = tmp.path().join("workspace");
+        let nested = crate_root.join("src").join("nested");
+        fs::create_dir_all(&nested).expect("create nested");
+        fs::write(
+            crate_root.join(CARGO_TOML_FILE_NAME),
+            "[package]\nname='x'\nversion='0.1.0'\nedition='2024'\n",
+        )
+        .expect("write cargo");
+
+        // Create a non-standard cache directory name at the crate root.
+        fs::create_dir_all(crate_root.join(".cache-v2")).expect("create custom cache dir");
+
+        let _guard = CwdGuard::swap_to(&nested).expect("set cwd");
+        let cache = CacheRoot::from_discovery().expect("discover");
+
+        // from_discovery should still resolve to `<crate_root>/.cache` (not `.cache-v2`).
+        let expected = crate_root
+            .canonicalize()
+            .expect("canonicalize crate root")
+            .join(CACHE_DIR_NAME);
+        assert_eq!(cache.path(), expected);
+    }
+
+    #[test]
     fn cache_path_preserves_absolute_paths() {
         let root = CacheRoot::from_root("/tmp/project");
         let absolute = PathBuf::from("/tmp/custom/cache.json");
-        let resolved = root.cache_path(".cache", &absolute);
+        let resolved = root.cache_path(CACHE_DIR_NAME, &absolute);
         assert_eq!(resolved, absolute);
     }
 
@@ -838,10 +862,10 @@ mod tests {
         let tmp = TempDir::new().expect("tempdir");
         let cache = CacheRoot::from_root(tmp.path());
 
-        let got = cache.cache_path(".cache", "tool/v1/data.bin");
+        let got = cache.cache_path(CACHE_DIR_NAME, "tool/v1/data.bin");
         let expected = tmp
             .path()
-            .join(".cache")
+            .join(CACHE_DIR_NAME)
             .join("tool")
             .join("v1")
             .join("data.bin");
