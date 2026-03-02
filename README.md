@@ -4,7 +4,9 @@
 
 Directory-based cache and artifact path management with crate-root discovery, grouped cache paths, and optional eviction on directory initialization.
 
-This crate is intentionally tool-agnostic — it only manages cache/artifact directory layout and paths and does not assume or depend on any specific consumer tooling. Any tool or library may use it to discover, create, and evict files in project-scoped cache directories.
+**This crate is intentionally tool-agnostic** — it only manages cache/artifact directory layout and paths and does not assume or depend on any specific consumer tooling. Any tool or library may use it to discover, create, and evict files in project-scoped cache directories.
+
+If your utility reads or writes files at all, it can use `cache-manager` to compute and manage cache paths and apply eviction rules — the crate makes no assumptions about how callers read or write those files.
 
 **It has zero runtime dependencies (standard library only for library consumers).**
 
@@ -51,13 +53,35 @@ For `max_files` and `max_bytes`, files are evicted oldest-first by modified time
 
 Basic examples showing common operations:
 
-Discover a cache path for the current crate/workspace and resolve an entry path:
+The primary root type is `CacheRoot`, which represents a filesystem root
+under which cache groups (`CacheGroup`) live.
+
+A `CacheGroup` represents a subdirectory under a `CacheRoot` and manages
+cache entries stored in that directory.
+
+Discover a cache path for the current crate/workspace and resolve an entry path.
+
+Note: `discover_cache_path` only computes a filesystem path — it does not
+create directories or files. Behavior:
+
+- Searches upward from the current working directory for a `Cargo.toml` and
+	uses that crate root when found; otherwise it falls back to the current
+	working directory.
+- The discovered root is canonicalized when possible to avoid surprising
+	differences between logically-equal paths.
+- If the `relative_path` argument is absolute, it is returned unchanged.
 
 ```rust
 use cache_manager::CacheRoot;
 
-let p = CacheRoot::discover_cache_path(".cache", "tool/data.bin");
-println!("cache path: {}", p.display());
+// Compute a path like <crate-root>/.cache/tool/data.bin without creating it.
+let cache_path = CacheRoot::discover_cache_path(".cache", "tool/data.bin");
+println!("cache path: {}", cache_path.display());
+
+// If you already have an absolute entry path, it's returned unchanged:
+let absolute = std::path::PathBuf::from("/tmp/custom/cache.json");
+let kept = CacheRoot::discover_cache_path(".cache", &absolute);
+assert_eq!(kept, absolute);
 ```
 
 Create a `CacheRoot` from an explicit path and apply an eviction policy to a group:
@@ -111,6 +135,33 @@ println!("touched: {}", entry.display());
 Per-subdirectory policies
 
 Different subdirectories under the same `CacheRoot` can use independent policies; call `ensure_dir_with_policy` on each `CacheGroup` separately to apply per-group rules.
+
+Get the root path
+
+To obtain the underlying filesystem path for a `CacheRoot`, use `path()`:
+
+```rust
+use cache_manager::CacheRoot;
+
+let root = CacheRoot::from_root("/tmp/project");
+let root_path = root.path();
+println!("root path: {}", root_path.display());
+```
+
+Also obtain a `CacheGroup` path and resolve an entry path under that group:
+
+```rust
+use cache_manager::CacheRoot;
+
+let root = CacheRoot::from_root("/tmp/project");
+let group = root.group("artifacts");
+
+let group_path = group.path();
+println!("group path: {}", group_path.display());
+
+let entry_path = group.entry_path("v1/index.bin");
+println!("entry path: {}", entry_path.display());
+```
 
 
 ## License

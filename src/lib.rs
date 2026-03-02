@@ -72,6 +72,10 @@ impl CacheRoot {
     pub fn discover() -> io::Result<Self> {
         let cwd = env::current_dir()?;
         let root = find_crate_root(&cwd).unwrap_or(cwd);
+        // Prefer a canonicalized path when possible to avoid surprising
+        // differences between logically-equal paths (symlinks, tempdir
+        // representations, etc.) used by callers and tests.
+        let root = root.canonicalize().unwrap_or(root);
         Ok(Self { root })
     }
 
@@ -84,11 +88,12 @@ impl CacheRoot {
     pub fn discover_or_cwd() -> Self {
         let cwd = env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
         let root = find_crate_root(&cwd).unwrap_or(cwd);
+        let root = root.canonicalize().unwrap_or(root);
         Self { root }
     }
 
-    /// Returns the root path represented by this `CacheRoot`.
-    pub fn root(&self) -> &Path {
+    /// Return the underlying path for this `CacheRoot`.
+    pub fn path(&self) -> &Path {
         &self.root
     }
 
@@ -360,7 +365,7 @@ mod tests {
 
         let cache = CacheRoot::discover().expect("discover");
         let got = cache
-            .root()
+            .path()
             .canonicalize()
             .expect("canonicalize discovered root");
         let expected = tmp.path().canonicalize().expect("canonicalize temp path");
@@ -382,7 +387,7 @@ mod tests {
         let _guard = CwdGuard::swap_to(&nested).expect("set cwd");
         let cache = CacheRoot::discover().expect("discover");
         let got = cache
-            .root()
+            .path()
             .canonicalize()
             .expect("canonicalize discovered root");
         let expected = crate_root.canonicalize().expect("canonicalize crate root");
@@ -395,7 +400,7 @@ mod tests {
         let root = CacheRoot::from_root(tmp.path().join("custom-cache-root"));
         let group = root.group("taxonomy/v1");
 
-        assert_eq!(group.path(), root.root().join("taxonomy/v1").as_path());
+        assert_eq!(group.path(), root.path().join("taxonomy/v1").as_path());
     }
 
     #[test]
