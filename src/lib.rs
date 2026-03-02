@@ -347,8 +347,20 @@ mod tests {
     impl CwdGuard {
         fn swap_to(path: &Path) -> io::Result<Self> {
             let previous = env::current_dir()?;
-            env::set_current_dir(path)?;
-            Ok(Self { previous })
+            // Try to switch to `path`. If that fails, attempt to canonicalize
+            // the path and try again (helps on platforms where the tempdir
+            // representation differs or when symlinks are involved).
+            match env::set_current_dir(path) {
+                Ok(()) => Ok(Self { previous }),
+                Err(e) => {
+                    if let Ok(canon) = path.canonicalize() {
+                        env::set_current_dir(&canon)?;
+                        Ok(Self { previous })
+                    } else {
+                        Err(e)
+                    }
+                }
+            }
         }
     }
 
