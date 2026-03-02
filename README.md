@@ -34,7 +34,7 @@ cache entries stored in that directory.
 Discover a cache path for the current crate/workspace and resolve an entry path.
 
 > Note: `discover_cache_path` only computes a filesystem path — it does not
-create directories or files.
+> create directories or files.
 
 Behavior:
 
@@ -184,7 +184,6 @@ println!("group path: {}", group_path.display());
 let entry_path = group.entry_path("v1/index.bin");
 println!("entry path: {}", entry_path.display());
 ```
-
 
 ## License
 
