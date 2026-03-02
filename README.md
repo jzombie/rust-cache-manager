@@ -4,9 +4,7 @@
 
 Directory-based cache and artifact path management with crate-root discovery, grouped cache paths, and optional eviction on directory initialization.
 
-**This crate is intentionally tool-agnostic** — it only manages cache/artifact directory layout and paths and does not assume or depend on any specific consumer tooling. Any tool or library may use it to discover, create, and evict files in project-scoped cache directories.
-
-If your utility reads or writes files at all, it can use `cache-manager` to compute and manage cache paths and apply eviction rules — the crate makes no assumptions about how callers read or write those files.
+**This crate is intentionally tool-agnostic** — it only manages cache/artifact directory layout and paths and does not assume or depend on any specific consumer tooling. Any tool or library that reads or writes files can use `cache-manager` to compute/manage project-scoped cache paths and apply eviction rules.
 
 **It has zero runtime dependencies (standard library only for library consumers).**
 
@@ -62,49 +60,6 @@ let absolute = std::path::PathBuf::from("/tmp/custom/cache.json");
 let kept = CacheRoot::discover_cache_path(".cache", &absolute);
 assert_eq!(kept, absolute);
 ```
-
-**Filesystem effects**
-
-- **Pure (no I/O):** `CacheRoot::discover`, `CacheRoot::discover_cache_path`, `CacheRoot::cache_path`, `CacheRoot::group`, `CacheGroup::entry_path`, `CacheGroup::subgroup`
-- **Create dirs:** `CacheRoot::ensure_group`, `CacheGroup::ensure_dir`
-- **Create dirs + optional eviction:** `CacheRoot::ensure_group_with_policy`, `CacheGroup::ensure_dir_with_policy`
-- **Create file (creates parents as needed):** `CacheGroup::touch`
-
-Note: eviction only runs when you pass a policy to the `*_with_policy` methods.
-
-### Eviction Policy
-
-Use `EvictPolicy` with:
-
-- `CacheGroup::ensure_dir_with_policy(...)`
-- `CacheRoot::ensure_group_with_policy(...)`
-- `CacheGroup::eviction_report(...)` to preview which files would be evicted.
-
-Policy fields:
-
-- `max_age`: remove files older than or equal to the age threshold.
-- `max_files`: keep at most N files.
-- `max_bytes`: keep total file bytes at or below the threshold.
-
-Eviction order is always:
-
-1. `max_age`
-2. `max_files`
-3. `max_bytes`
-
-For `max_files` and `max_bytes`, files are evicted oldest-first by modified time (ascending), then by path for deterministic tie-breaking.
-
-`eviction_report(...)` and `ensure_*_with_policy(...)` use the same selection logic.
-
-#### How `max_bytes` works
-
-- Scans regular files recursively under the managed directory.
-- Sums `metadata.len()` across those files.
-- If total exceeds `max_bytes`, removes files oldest-first until total is `<= max_bytes`.
-- Directories are not counted as bytes.
-- Enforcement happens only during policy-aware `ensure_*_with_policy` calls (not continuously in the background).
-
-### More examples
 
 **Filesystem effects**
 
