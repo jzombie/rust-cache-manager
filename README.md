@@ -158,6 +158,8 @@ Per-subdirectory policies
 
 Different subdirectories under the same `CacheRoot` can use independent policies; call `ensure_dir_with_policy` on each `CacheGroup` separately to apply per-group rules.
 
+Note: calling `CacheGroup::ensure_dir()` is equivalent to `CacheGroup::ensure_dir_with_policy(None)`. Likewise, `CacheRoot::ensure_group(...)` behaves the same as `CacheRoot::ensure_group_with_policy(..., None)`.
+
 Get the root path
 
 To obtain the underlying filesystem path for a `CacheRoot`, use `path()`:
