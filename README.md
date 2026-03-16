@@ -7,6 +7,7 @@ Directory-based cache and artifact path management with discovered `.cache` root
 - **Tool-agnostic:** any tool or library that can write to the filesystem can use `cache-manager` as a managed cache/artifact path layout layer.
 - **Zero runtime dependencies** in the standard install (library consumers use only the Rust standard library).
 - **Optional feature `process-scoped-cache`:** adds one runtime dependency, [`tempfile`](https://docs.rs/tempfile), to support process/thread scoped sub-caches with automatic cleanup on normal shutdown.
+- **Open-source + commercial-friendly licensing:** dual-licensed under MIT or Apache-2.0, so it can be used in open-source and commercial projects.
 - **Built-in eviction policies:** enforce cache limits by file age, file count, and total bytes, with deterministic oldest-first trimming.
 - **Predictable discovery + root control:** discover `<crate-root>/.cache` automatically or pin an explicit root with `CacheRoot::from_root(...)`.
 - **Composable cache layout API:** create groups/subgroups and entry paths consistently across tools without custom path-joining logic.
