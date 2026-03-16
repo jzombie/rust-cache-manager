@@ -1,6 +1,6 @@
 [package]
 name = "cache-manager"
-version = "0.2.1"
+version = "0.3.0"
 edition = "2024"
 description = "Simple managed directory system for project-scoped caches with optional eviction policies."
 license = "MIT OR Apache-2.0"
