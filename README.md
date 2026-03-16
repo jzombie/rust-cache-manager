@@ -6,7 +6,10 @@ Directory-based cache and artifact path management with discovered `.cache` root
 
 **This crate is intentionally tool-agnostic** — it only manages cache/artifact directory layout and paths and does not assume or depend on any specific consumer tooling. Any tool or library that reads or writes files can use `cache-manager` to compute/manage project-scoped cache paths and apply eviction rules.
 
-**It has zero runtime dependencies (standard library only for library consumers).**
+**By default it has zero runtime dependencies (standard library only for library consumers).**
+
+An optional feature flag (`process-scoped-cache`) enables process/thread scoped
+sub-caches backed by `tempfile` for automatic cleanup on normal shutdown.
 
 It is suitable for:
 
@@ -35,10 +38,10 @@ use cache_manager::CacheRoot;
 let root = CacheRoot::from_root("/tmp/project");
 let group = root.group("artifacts/json");
 
-// Create the group directory if needed.
+// Create the group directory if needed
 group.ensure_dir().expect("ensure group");
 
-// `index.bin` is just an example artifact filename that another program might generate.
+// `index.bin` is just an example artifact filename that another program might generate
 let entry: std::path::PathBuf = group.touch("v1/index.bin").expect("touch entry");
 println!("{}", entry.display());
 ```
@@ -69,6 +72,12 @@ println!("{}", entry_without_touch.display());
 - **Create dirs + optional eviction:** `CacheRoot::ensure_group_with_policy`, `CacheGroup::ensure_dir_with_policy`
 - **Create file (creates parents):** `CacheGroup::touch`
 
+With feature `process-scoped-cache` enabled:
+
+- **Process-scoped group:** `ProcessScopedCacheGroup::new`, `ProcessScopedCacheGroup::from_group`
+- **Per-thread subgroup:** `ProcessScopedCacheGroup::thread_group`, `ProcessScopedCacheGroup::ensure_thread_group`
+- **Per-thread entry helpers:** `ProcessScopedCacheGroup::thread_entry_path`, `ProcessScopedCacheGroup::touch_thread_entry`
+
 > Note: eviction only runs when you pass a policy to the `*_with_policy` methods.
 
 ### Discovering cache paths
@@ -93,8 +102,10 @@ let cache_path = CacheRoot::from_discovery()
 	.expect("discover cache root")
 	.cache_path("tool", "data.bin");
 println!("cache path: {}", cache_path.display());
+
 // Expected relative location under the discovered crate root:
 assert!(cache_path.ends_with(Path::new(".cache").join("tool").join("data.bin")));
+
 // The call only computes the path; it does not create files or directories.
 assert!(!cache_path.exists());
 
@@ -214,6 +225,82 @@ For `max_files` and `max_bytes`, files are evicted oldest-first by modified time
 - If total exceeds `max_bytes`, removes files oldest-first until total is `<= max_bytes`.
 - Directories are not counted as bytes.
 - Enforcement happens only during policy-aware `ensure_*_with_policy` calls (not continuously in the background).
+
+### Optional process/thread scoped caches
+
+Enable feature flag:
+
+```bash
+cargo add cache-manager --features process-scoped-cache
+```
+
+Or, if editing `Cargo.toml` manually:
+
+```toml
+[dependencies]
+cache-manager = { version = "<latest>", features = ["process-scoped-cache"] }
+```
+
+Use `ProcessScopedCacheGroup` to create an auto-generated process subdirectory
+under your assigned root/group, then derive a stable subgroup for each thread:
+
+```rust
+#[cfg(feature = "process-scoped-cache")]
+fn main() {
+	use cache_manager::{CacheRoot, ProcessScopedCacheGroup};
+	use std::path::Path;
+
+	// 1) Build the root and the base group where process directories will live
+	let root = CacheRoot::from_root("/tmp/project");
+	let base_group = root.group("artifacts/session");
+
+	// 2) Create a process-scoped directory (name starts with `pid-<pid>-...`)
+	let scoped = ProcessScopedCacheGroup::new(&root, "artifacts/session")
+		.expect("create process-scoped cache");
+
+	// 3) Resolve this thread's subgroup and touch an entry under it
+	let thread_group = scoped.ensure_thread_group().expect("ensure thread group");
+	let entry = thread_group.touch("v1/index.bin").expect("touch thread entry");
+
+	// 4) Verify the static pieces of the structure
+	assert!(entry.starts_with(base_group.path()));
+	assert!(entry.ends_with(Path::new("v1/index.bin")));
+
+	// 5) Verify the dynamic thread segment (`thread-<n>`)
+	let thread_dir = entry
+		.parent()
+		.and_then(|p| p.parent())
+		.expect("thread dir");
+
+	assert!(thread_dir
+		.file_name()
+		.and_then(|s| s.to_str())
+		.expect("thread dir name")
+		.starts_with("thread-"));
+
+	// 6) Verify the dynamic process segment (`pid-<current-pid>-<random>`)
+	let process_dir = thread_dir.parent().expect("process dir");
+	let expected_pid_prefix = format!("pid-{}-", std::process::id());
+
+	assert!(process_dir
+		.file_name()
+		.and_then(|s| s.to_str())
+		.expect("process dir name")
+		.starts_with(&expected_pid_prefix));
+
+	// Example output path
+	println!("{}", entry.display());
+}
+
+#[cfg(not(feature = "process-scoped-cache"))]
+fn main() {}
+```
+
+Behavior notes:
+
+- Respects all configured roots/groups because process-scoped paths are always created under your provided `CacheRoot`/`CacheGroup`.
+- The process subdirectory is deleted when the handle is dropped during normal process shutdown.
+- Cleanup is best-effort; abnormal termination (for example `SIGKILL` or crash) can leave stale directories.
 
 ### Additional examples
 
