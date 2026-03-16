@@ -1028,6 +1028,26 @@ mod tests {
         assert_eq!(remaining.len(), 1);
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn collect_files_recursive_ignores_non_file_non_directory_entries() {
+        use std::os::unix::net::UnixListener;
+
+        let tmp = TempDir::new().expect("tempdir");
+        let cache = CacheRoot::from_root(tmp.path());
+        let group = cache.group("artifacts");
+        group.ensure_dir().expect("ensure dir");
+
+        let socket_path = group.entry_path("live.sock");
+        let _listener = UnixListener::bind(&socket_path).expect("bind unix socket");
+
+        fs::write(group.entry_path("a.bin"), vec![1u8; 1]).expect("write file");
+
+        let files = collect_files(group.path()).expect("collect files");
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].path, group.entry_path("a.bin"));
+    }
+
     #[test]
     fn max_bytes_policy_under_threshold_does_not_evict() {
         let tmp = TempDir::new().expect("tempdir");
@@ -1165,6 +1185,35 @@ mod tests {
             .to_path_buf();
 
         assert_ne!(main_thread_group, expected_other);
+    }
+
+    #[cfg(feature = "process-scoped-cache")]
+    #[test]
+    fn process_scoped_cache_from_group_uses_given_base_group() {
+        let tmp = TempDir::new().expect("tempdir");
+        let root = CacheRoot::from_root(tmp.path());
+        let base_group = root.group("artifacts/custom-base");
+
+        let scoped = ProcessScopedCacheGroup::from_group(base_group.clone()).expect("create");
+
+        assert!(scoped.path().starts_with(base_group.path()));
+        assert_eq!(scoped.process_group().path(), scoped.path());
+    }
+
+    #[cfg(feature = "process-scoped-cache")]
+    #[test]
+    fn process_scoped_cache_thread_entry_path_matches_touch_location() {
+        let tmp = TempDir::new().expect("tempdir");
+        let root = CacheRoot::from_root(tmp.path());
+        let scoped = ProcessScopedCacheGroup::new(&root, "artifacts").expect("create");
+
+        let planned = scoped.thread_entry_path("nested/data.bin");
+        let touched = scoped
+            .touch_thread_entry("nested/data.bin")
+            .expect("touch thread entry");
+
+        assert_eq!(planned, touched);
+        assert!(touched.exists());
     }
 
     #[cfg(feature = "process-scoped-cache")]
