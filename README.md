@@ -97,7 +97,7 @@ Behavior:
 use cache_manager::CacheRoot;
 use std::path::Path;
 
-// Compute a path like <crate-root>/.cache/tool/data.bin without creating it.
+// Compute a path like <crate-root>/.cache/tool/data.bin without creating it
 let cache_path = CacheRoot::from_discovery()
 	.expect("discover cache root")
 	.cache_path("tool", "data.bin");
@@ -106,7 +106,7 @@ println!("cache path: {}", cache_path.display());
 // Expected relative location under the discovered crate root:
 assert!(cache_path.ends_with(Path::new(".cache").join("tool").join("data.bin")));
 
-// The call only computes the path; it does not create files or directories.
+// The call only computes the path; it does not create files or directories
 assert!(!cache_path.exists());
 
 // If you already have an absolute entry path, it's returned unchanged:
