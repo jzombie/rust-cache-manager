@@ -4,7 +4,7 @@
 
 Directory-based cache and artifact path management with discovered `.cache` roots, grouped cache paths, and optional eviction on directory initialization.
 
-- **Tool-agnostic:** manages only cache/artifact directory layout and paths, without assuming any specific consumer tooling.
+- **Tool-agnostic:** any tool or library that can write to the filesystem can use `cache-manager` as a managed cache/artifact path layout layer.
 - **Zero runtime dependencies** in the standard install (library consumers use only the Rust standard library).
 - **Optional feature `process-scoped-cache`:** adds one runtime dependency, [`tempfile`](https://docs.rs/tempfile), to support process/thread scoped sub-caches with automatic cleanup on normal shutdown.
 - **Suitable for artifact storage** (build outputs, generated files, intermediate data, etc.).
