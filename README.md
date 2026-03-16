@@ -4,17 +4,11 @@
 
 Directory-based cache and artifact path management with discovered `.cache` roots, grouped cache paths, and optional eviction on directory initialization.
 
-**This crate is intentionally tool-agnostic** — it only manages cache/artifact directory layout and paths and does not assume or depend on any specific consumer tooling. Any tool or library that reads or writes files can use `cache-manager` to compute/manage project-scoped cache paths and apply eviction rules.
-
-**By default it has zero runtime dependencies (standard library only for library consumers).**
-
-An optional feature flag (`process-scoped-cache`) enables process/thread scoped
-sub-caches backed by `tempfile` for automatic cleanup on normal shutdown.
-
-It is suitable for:
-
-- Artifact storage (build outputs, generated files, intermediate data, etc.).
-- Monorepos or multi-crate workspaces that need centralized cache/artifact management via a shared root (for example with `CacheRoot::from_root(...)`).
+- **Tool-agnostic:** manages only cache/artifact directory layout and paths, without assuming any specific consumer tooling.
+- **Zero runtime dependencies** in the standard install (library consumers use only the Rust standard library).
+- **Optional feature `process-scoped-cache`:** adds one runtime dependency, [`tempfile`](https://docs.rs/tempfile), to support process/thread scoped sub-caches with automatic cleanup on normal shutdown.
+- **Suitable for artifact storage** (build outputs, generated files, intermediate data, etc.).
+- **Suitable for monorepos or multi-crate workspaces** that need centralized cache/artifact management via a shared root (for example with `CacheRoot::from_root(...)`).
 
 > Tested on macOS, Linux, and Windows.
 
