@@ -31,31 +31,50 @@ Directory-based cache and artifact path management with discovered `.cache` root
 Using `touch` (convenient when you want this crate to create the file):
 
 ```rust
-use cache_manager::CacheRoot;
+use cache_manager::{CacheGroup, CacheRoot};
 
-let root = CacheRoot::from_root("/tmp/project");
-let group = root.group("artifacts/json");
+let root: CacheRoot = CacheRoot::from_root("/tmp/project");
+let group: CacheGroup = root.group("artifacts/json");
 
 // Create the group directory if needed
 group.ensure_dir().expect("ensure group");
 
 // `index.bin` is just an example artifact filename that another program might generate
 let entry: std::path::PathBuf = group.touch("v1/index.bin").expect("touch entry");
+
+let expected: std::path::PathBuf = root
+	.path()
+	.join("artifacts")
+	.join("json")
+	.join("v1")
+	.join("index.bin");
+assert_eq!(entry, expected);
+
 println!("{}", entry.display());
 ```
 
-Without `touch` (compute from `group.path()` and write with your own I/O):
+Without `touch` (compute the path for a separate tool, then write with your own I/O):
 
 ```rust
-use cache_manager::CacheRoot;
+use cache_manager::{CacheGroup, CacheRoot};
 use std::fs;
 
-let root = CacheRoot::from_root("/tmp/project");
-let group = root.group("artifacts/json");
+let root: CacheRoot = CacheRoot::from_root("/tmp/project");
+let group: CacheGroup = root.group("artifacts/json");
 
 group.ensure_dir().expect("ensure group");
 
-let entry_without_touch = group.path().join("v1/index.bin");
+// This is the path you can hand to another tool/process
+let entry_without_touch: std::path::PathBuf = group.entry_path("v1/index.bin");
+
+let expected: std::path::PathBuf = root
+	.path()
+	.join("artifacts")
+	.join("json")
+	.join("v1")
+	.join("index.bin");
+assert_eq!(entry_without_touch, expected);
+
 fs::create_dir_all(entry_without_touch.parent().expect("entry parent"))
 	.expect("create entry parent");
 fs::write(&entry_without_touch, b"artifact bytes").expect("write artifact");
@@ -96,7 +115,7 @@ use cache_manager::CacheRoot;
 use std::path::Path;
 
 // Compute a path like <crate-root>/.cache/tool/data.bin without creating it
-let cache_path = CacheRoot::from_discovery()
+let cache_path: std::path::PathBuf = CacheRoot::from_discovery()
 	.expect("discover cache root")
 	.cache_path("tool", "data.bin");
 println!("cache path: {}", cache_path.display());
@@ -108,8 +127,8 @@ assert!(cache_path.ends_with(Path::new(".cache").join("tool").join("data.bin")))
 assert!(!cache_path.exists());
 
 // If you already have an absolute entry path, it's returned unchanged:
-let absolute = std::path::PathBuf::from("/tmp/custom/cache.json");
-let kept = CacheRoot::from_discovery()
+let absolute: std::path::PathBuf = std::path::PathBuf::from("/tmp/custom/cache.json");
+let kept: std::path::PathBuf = CacheRoot::from_discovery()
 	.expect("discover cache root")
 	.cache_path("tool", &absolute);
 assert_eq!(kept, absolute);
@@ -138,10 +157,10 @@ Apply policy directly to a `CacheGroup`:
 ```rust
 use cache_manager::{CacheRoot, EvictPolicy};
 
-let root = CacheRoot::from_root("/tmp/project");
-let group = root.group("artifacts");
+let root: CacheRoot = CacheRoot::from_root("/tmp/project");
+let group: cache_manager::CacheGroup = root.group("artifacts");
 
-let policy = EvictPolicy {
+let policy: EvictPolicy = EvictPolicy {
 	max_files: Some(100),
 	..Default::default()
 };
@@ -157,8 +176,8 @@ Apply policy through `CacheRoot` convenience API:
 use cache_manager::{CacheRoot, EvictPolicy};
 use std::time::Duration;
 
-let root = CacheRoot::from_root("/tmp/project");
-let policy = EvictPolicy {
+let root: CacheRoot = CacheRoot::from_root("/tmp/project");
+let policy: EvictPolicy = EvictPolicy {
 	max_age: Some(Duration::from_secs(60 * 60 * 24 * 30)), // 30 days
 	..Default::default()
 };
@@ -171,16 +190,16 @@ root
 Preview evictions without deleting files:
 
 ```rust
-use cache_manager::{CacheRoot, EvictPolicy};
+use cache_manager::{CacheRoot, EvictPolicy, EvictionReport};
 
-let root = CacheRoot::from_root("/tmp/project");
-let group = root.group("artifacts");
-let policy = EvictPolicy {
+let root: CacheRoot = CacheRoot::from_root("/tmp/project");
+let group: cache_manager::CacheGroup = root.group("artifacts");
+let policy: EvictPolicy = EvictPolicy {
 	max_bytes: Some(10_000_000),
 	..Default::default()
 };
 
-let report = group.eviction_report(&policy).expect("eviction report");
+let report: EvictionReport = group.eviction_report(&policy).expect("eviction report");
 for path in report.marked_for_eviction {
 	println!("would remove: {}", path.display());
 }
@@ -199,7 +218,7 @@ When combined, all configured limits are enforced in order.
 use cache_manager::EvictPolicy;
 use std::time::Duration;
 
-let combined = EvictPolicy {
+let combined: EvictPolicy = EvictPolicy {
 	max_age: Some(Duration::from_secs(60 * 60 * 24 * 30)), // 30 days
 	max_files: Some(200),
 	max_bytes: Some(500 * 1024 * 1024), // 500 MB
@@ -245,27 +264,27 @@ under your assigned root/group, then derive a stable subgroup for each thread:
 ```rust
 #[cfg(feature = "process-scoped-cache")]
 fn main() {
-	use cache_manager::{CacheRoot, ProcessScopedCacheGroup};
+	use cache_manager::{CacheGroup, CacheRoot, ProcessScopedCacheGroup};
 	use std::path::Path;
 
 	// 1) Build the root and the base group where process directories will live
-	let root = CacheRoot::from_root("/tmp/project");
-	let base_group = root.group("artifacts/session");
+	let root: CacheRoot = CacheRoot::from_root("/tmp/project");
+	let base_group: CacheGroup = root.group("artifacts/session");
 
 	// 2) Create a process-scoped directory (name starts with `pid-<pid>-...`)
-	let scoped = ProcessScopedCacheGroup::new(&root, "artifacts/session")
+	let scoped: ProcessScopedCacheGroup = ProcessScopedCacheGroup::new(&root, "artifacts/session")
 		.expect("create process-scoped cache");
 
 	// 3) Resolve this thread's subgroup and touch an entry under it
-	let thread_group = scoped.ensure_thread_group().expect("ensure thread group");
-	let entry = thread_group.touch("v1/index.bin").expect("touch thread entry");
+	let thread_group: CacheGroup = scoped.ensure_thread_group().expect("ensure thread group");
+	let entry: std::path::PathBuf = thread_group.touch("v1/index.bin").expect("touch thread entry");
 
 	// 4) Verify the static pieces of the structure
 	assert!(entry.starts_with(base_group.path()));
 	assert!(entry.ends_with(Path::new("v1/index.bin")));
 
 	// 5) Verify the dynamic thread segment (`thread-<n>`)
-	let thread_dir = entry
+	let thread_dir: &Path = entry
 		.parent()
 		.and_then(|p| p.parent())
 		.expect("thread dir");
@@ -277,8 +296,8 @@ fn main() {
 		.starts_with("thread-"));
 
 	// 6) Verify the dynamic process segment (`pid-<current-pid>-<random>`)
-	let process_dir = thread_dir.parent().expect("process dir");
-	let expected_pid_prefix = format!("pid-{}-", std::process::id());
+	let process_dir: &Path = thread_dir.parent().expect("process dir");
+	let expected_pid_prefix: String = format!("pid-{}-", std::process::id());
 
 	assert!(process_dir
 		.file_name()
@@ -305,12 +324,21 @@ Behavior notes:
 Create or update a cache entry (ensures parent directories exist):
 
 ```rust
-use cache_manager::CacheRoot;
+use cache_manager::{CacheGroup, CacheRoot};
 
-let root = CacheRoot::from_root("/tmp/project");
-let group = root.group("artifacts/json");
+let root: CacheRoot = CacheRoot::from_root("/tmp/project");
+let group: CacheGroup = root.group("artifacts/json");
 
-let entry = group.touch("v1/index.bin").expect("touch entry");
+let entry: std::path::PathBuf = group.touch("v1/index.bin").expect("touch entry");
+
+let expected: std::path::PathBuf = root
+	.path()
+	.join("artifacts")
+	.join("json")
+	.join("v1")
+	.join("index.bin");
+assert_eq!(entry, expected);
+
 println!("touched: {}", entry.display());
 ```
 
@@ -327,23 +355,23 @@ To obtain the underlying filesystem path for a `CacheRoot`, use `path()`:
 ```rust
 use cache_manager::CacheRoot;
 
-let root = CacheRoot::from_root("/tmp/project");
-let root_path = root.path();
+let root: CacheRoot = CacheRoot::from_root("/tmp/project");
+let root_path: &std::path::Path = root.path();
 println!("root path: {}", root_path.display());
 ```
 
 Also obtain a `CacheGroup` path and resolve an entry path under that group:
 
 ```rust
-use cache_manager::CacheRoot;
+use cache_manager::{CacheGroup, CacheRoot};
 
-let root = CacheRoot::from_root("/tmp/project");
-let group = root.group("artifacts");
+let root: CacheRoot = CacheRoot::from_root("/tmp/project");
+let group: CacheGroup = root.group("artifacts");
 
-let group_path = group.path();
+let group_path: &std::path::Path = group.path();
 println!("group path: {}", group_path.display());
 
-let entry_path = group.entry_path("v1/index.bin");
+let entry_path: std::path::PathBuf = group.entry_path("v1/index.bin");
 println!("entry path: {}", entry_path.display());
 ```
 
