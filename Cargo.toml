@@ -26,4 +26,4 @@ tempfile = { workspace = true, optional = true }
 tempfile.workspace = true
 
 [workspace.dependencies]
-tempfile = "3.25.0"
+tempfile = "3.27.0"
