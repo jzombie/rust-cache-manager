@@ -15,6 +15,10 @@ keywords = [
     "workspace",
 ]
 
+# Optional/test dependencies
+[workspace.dependencies]
+tempfile = "3.27.0"
+
 [features]
 default = []
 process-scoped-cache = ["dep:tempfile"]
@@ -24,6 +28,3 @@ tempfile = { workspace = true, optional = true }
 
 [dev-dependencies]
 tempfile.workspace = true
-
-[workspace.dependencies]
-tempfile = "3.27.0"
