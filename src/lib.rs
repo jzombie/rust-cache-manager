@@ -3,14 +3,20 @@
 
 mod constants;
 
+#[cfg(feature = "process-scoped-cache")]
+use std::cell::Cell;
 use std::env;
 use std::fs;
 use std::fs::OpenOptions;
 use std::io;
 use std::path::{Path, PathBuf};
+#[cfg(feature = "process-scoped-cache")]
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use constants::{CACHE_DIR_NAME, CARGO_TOML_FILE_NAME};
+#[cfg(feature = "process-scoped-cache")]
+use tempfile::{Builder, TempDir};
 
 /// Optional eviction controls applied by `CacheGroup::ensure_dir_with_policy`
 /// and `CacheRoot::ensure_group_with_policy`.
@@ -215,6 +221,105 @@ impl CacheGroup {
         OpenOptions::new().create(true).append(true).open(&entry)?;
         Ok(entry)
     }
+}
+
+/// Process-scoped cache group handle with per-thread subgroup helpers.
+///
+/// This type is available when the `process-scoped-cache` feature is enabled.
+///
+/// It creates an auto-generated process subdirectory under a user-selected
+/// base cache group. The backing directory is removed when this handle is
+/// dropped during normal process shutdown.
+///
+/// Notes:
+/// - Cleanup is best-effort and is not guaranteed after abnormal termination
+///   (for example `SIGKILL` or process crash).
+/// - All paths still respect the caller-provided `CacheRoot` and base group.
+#[cfg(feature = "process-scoped-cache")]
+#[derive(Debug)]
+pub struct ProcessScopedCacheGroup {
+    process_group: CacheGroup,
+    _temp_dir: TempDir,
+}
+
+#[cfg(feature = "process-scoped-cache")]
+impl ProcessScopedCacheGroup {
+    /// Create a process-scoped cache handle under `root.group(relative_group)`.
+    pub fn new<P: AsRef<Path>>(root: &CacheRoot, relative_group: P) -> io::Result<Self> {
+        Self::from_group(root.group(relative_group))
+    }
+
+    /// Create a process-scoped cache handle under an existing base group.
+    pub fn from_group(base_group: CacheGroup) -> io::Result<Self> {
+        base_group.ensure_dir()?;
+        let pid = std::process::id();
+        let temp_dir = Builder::new()
+            .prefix(&format!("pid-{pid}-"))
+            .tempdir_in(base_group.path())?;
+        let process_group = CacheGroup {
+            path: temp_dir.path().to_path_buf(),
+        };
+
+        Ok(Self {
+            process_group,
+            _temp_dir: temp_dir,
+        })
+    }
+
+    /// Return the process-scoped directory path.
+    pub fn path(&self) -> &Path {
+        self.process_group.path()
+    }
+
+    /// Return the process-scoped cache group.
+    pub fn process_group(&self) -> CacheGroup {
+        self.process_group.clone()
+    }
+
+    /// Return the subgroup for the current thread.
+    ///
+    /// Each thread gets a stable, process-local incremental id (`thread-<n>`)
+    /// for the process lifetime.
+    pub fn thread_group(&self) -> CacheGroup {
+        self.process_group
+            .subgroup(format!("thread-{}", current_thread_cache_group_id()))
+    }
+
+    /// Ensure and return the subgroup for the current thread.
+    pub fn ensure_thread_group(&self) -> io::Result<CacheGroup> {
+        let group = self.thread_group();
+        group.ensure_dir()?;
+        Ok(group)
+    }
+
+    /// Build an entry path inside the current thread subgroup.
+    pub fn thread_entry_path<P: AsRef<Path>>(&self, relative_file: P) -> PathBuf {
+        self.thread_group().entry_path(relative_file)
+    }
+
+    /// Touch an entry inside the current thread subgroup.
+    pub fn touch_thread_entry<P: AsRef<Path>>(&self, relative_file: P) -> io::Result<PathBuf> {
+        self.ensure_thread_group()?.touch(relative_file)
+    }
+}
+
+#[cfg(feature = "process-scoped-cache")]
+fn current_thread_cache_group_id() -> u64 {
+    thread_local! {
+        static THREAD_GROUP_ID: Cell<Option<u64>> = const { Cell::new(None) };
+    }
+
+    static NEXT_THREAD_GROUP_ID: AtomicU64 = AtomicU64::new(1);
+
+    THREAD_GROUP_ID.with(|slot| {
+        if let Some(id) = slot.get() {
+            id
+        } else {
+            let id = NEXT_THREAD_GROUP_ID.fetch_add(1, Ordering::Relaxed);
+            slot.set(Some(id));
+            id
+        }
+    })
 }
 
 fn find_crate_root(start: &Path) -> Option<PathBuf> {
@@ -923,6 +1028,26 @@ mod tests {
         assert_eq!(remaining.len(), 1);
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn collect_files_recursive_ignores_non_file_non_directory_entries() {
+        use std::os::unix::net::UnixListener;
+
+        let tmp = TempDir::new().expect("tempdir");
+        let cache = CacheRoot::from_root(tmp.path());
+        let group = cache.group("artifacts");
+        group.ensure_dir().expect("ensure dir");
+
+        let socket_path = group.entry_path("live.sock");
+        let _listener = UnixListener::bind(&socket_path).expect("bind unix socket");
+
+        fs::write(group.entry_path("a.bin"), vec![1u8; 1]).expect("write file");
+
+        let files = collect_files(group.path()).expect("collect files");
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].path, group.entry_path("a.bin"));
+    }
+
     #[test]
     fn max_bytes_policy_under_threshold_does_not_evict() {
         let tmp = TempDir::new().expect("tempdir");
@@ -997,5 +1122,114 @@ mod tests {
 
         assert_eq!(p1, p2);
         assert!(group.entry_path("keep_root.txt").exists());
+    }
+
+    #[cfg(feature = "process-scoped-cache")]
+    #[test]
+    fn process_scoped_cache_respects_root_and_group_assignments() {
+        let tmp = TempDir::new().expect("tempdir");
+        let root = CacheRoot::from_root(tmp.path().join("custom-root"));
+
+        let scoped = ProcessScopedCacheGroup::new(&root, "artifacts/session").expect("create");
+        let expected_prefix = root.group("artifacts/session").path().to_path_buf();
+
+        assert!(scoped.path().starts_with(&expected_prefix));
+        assert!(scoped.path().exists());
+    }
+
+    #[cfg(feature = "process-scoped-cache")]
+    #[test]
+    fn process_scoped_cache_deletes_directory_on_drop() {
+        let tmp = TempDir::new().expect("tempdir");
+        let root = CacheRoot::from_root(tmp.path());
+
+        let process_dir = {
+            let scoped = ProcessScopedCacheGroup::new(&root, "artifacts").expect("create");
+            let p = scoped.path().to_path_buf();
+            assert!(p.exists());
+            p
+        };
+
+        assert!(!process_dir.exists());
+    }
+
+    #[cfg(feature = "process-scoped-cache")]
+    #[test]
+    fn process_scoped_cache_thread_group_is_stable_per_thread() {
+        let tmp = TempDir::new().expect("tempdir");
+        let root = CacheRoot::from_root(tmp.path());
+        let scoped = ProcessScopedCacheGroup::new(&root, "artifacts").expect("create");
+
+        let first = scoped.thread_group().path().to_path_buf();
+        let second = scoped.thread_group().path().to_path_buf();
+
+        assert_eq!(first, second);
+    }
+
+    #[cfg(feature = "process-scoped-cache")]
+    #[test]
+    fn process_scoped_cache_thread_group_differs_across_threads() {
+        let tmp = TempDir::new().expect("tempdir");
+        let root = CacheRoot::from_root(tmp.path());
+        let scoped = ProcessScopedCacheGroup::new(&root, "artifacts").expect("create");
+
+        let main_thread_group = scoped.thread_group().path().to_path_buf();
+        let other_thread_group = std::thread::spawn(current_thread_cache_group_id)
+            .join()
+            .expect("join thread");
+
+        let expected_other = scoped
+            .process_group()
+            .subgroup(format!("thread-{other_thread_group}"))
+            .path()
+            .to_path_buf();
+
+        assert_ne!(main_thread_group, expected_other);
+    }
+
+    #[cfg(feature = "process-scoped-cache")]
+    #[test]
+    fn process_scoped_cache_from_group_uses_given_base_group() {
+        let tmp = TempDir::new().expect("tempdir");
+        let root = CacheRoot::from_root(tmp.path());
+        let base_group = root.group("artifacts/custom-base");
+
+        let scoped = ProcessScopedCacheGroup::from_group(base_group.clone()).expect("create");
+
+        assert!(scoped.path().starts_with(base_group.path()));
+        assert_eq!(scoped.process_group().path(), scoped.path());
+    }
+
+    #[cfg(feature = "process-scoped-cache")]
+    #[test]
+    fn process_scoped_cache_thread_entry_path_matches_touch_location() {
+        let tmp = TempDir::new().expect("tempdir");
+        let root = CacheRoot::from_root(tmp.path());
+        let scoped = ProcessScopedCacheGroup::new(&root, "artifacts").expect("create");
+
+        let planned = scoped.thread_entry_path("nested/data.bin");
+        let touched = scoped
+            .touch_thread_entry("nested/data.bin")
+            .expect("touch thread entry");
+
+        assert_eq!(planned, touched);
+        assert!(touched.exists());
+    }
+
+    #[cfg(feature = "process-scoped-cache")]
+    #[test]
+    fn touch_thread_entry_creates_entry_under_thread_group() {
+        let tmp = TempDir::new().expect("tempdir");
+        let root = CacheRoot::from_root(tmp.path());
+        let scoped = ProcessScopedCacheGroup::new(&root, "artifacts").expect("create");
+
+        let entry = scoped
+            .touch_thread_entry("nested/data.bin")
+            .expect("touch thread entry");
+
+        assert!(entry.exists());
+        assert!(entry.starts_with(scoped.path()));
+        let thread_group = scoped.thread_group().path().to_path_buf();
+        assert!(entry.starts_with(&thread_group));
     }
 }
