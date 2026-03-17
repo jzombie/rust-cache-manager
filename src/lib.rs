@@ -20,6 +20,16 @@ use directories::ProjectDirs;
 #[cfg(feature = "process-scoped-cache")]
 use tempfile::{Builder, TempDir};
 
+#[cfg(feature = "os-cache-dir")]
+fn project_dirs_or_not_found(project_dirs: Option<ProjectDirs>) -> io::Result<ProjectDirs> {
+    project_dirs.ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::NotFound,
+            "could not resolve an OS cache directory for the provided project identity",
+        )
+    })
+}
+
 /// Optional eviction controls applied by `CacheGroup::ensure_dir_with_policy`
 /// and `CacheRoot::ensure_group_with_policy`.
 ///
@@ -134,12 +144,7 @@ impl CacheRoot {
         application: &str,
     ) -> io::Result<Self> {
         let project_dirs =
-            ProjectDirs::from(qualifier, organization, application).ok_or_else(|| {
-                io::Error::new(
-                    io::ErrorKind::NotFound,
-                    "could not resolve an OS cache directory for the provided project identity",
-                )
-            })?;
+            project_dirs_or_not_found(ProjectDirs::from(qualifier, organization, application))?;
 
         Ok(Self {
             root: project_dirs.cache_dir().to_path_buf(),
@@ -727,6 +732,14 @@ mod tests {
             .expect("from project dirs");
 
         assert_eq!(root.path(), expected.as_path());
+    }
+
+    #[cfg(feature = "os-cache-dir")]
+    #[test]
+    fn project_dirs_or_not_found_returns_not_found_for_none() {
+        let err = project_dirs_or_not_found(None)
+            .expect_err("none project dirs should map to not found");
+        assert_eq!(err.kind(), io::ErrorKind::NotFound);
     }
 
     #[cfg(feature = "process-scoped-cache")]
