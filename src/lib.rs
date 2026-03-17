@@ -15,6 +15,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use constants::{CACHE_DIR_NAME, CARGO_TOML_FILE_NAME};
+#[cfg(feature = "os-cache-dir")]
+use directories::ProjectDirs;
 #[cfg(feature = "process-scoped-cache")]
 use tempfile::{Builder, TempDir};
 
@@ -101,6 +103,63 @@ impl CacheRoot {
     /// Create a `CacheRoot` from an explicit filesystem path.
     pub fn from_root<P: Into<PathBuf>>(root: P) -> Self {
         Self { root: root.into() }
+    }
+
+    /// Create a `CacheRoot` from an OS-native per-user cache directory for
+    /// the given project identity.
+    ///
+    /// This API is available when the `os-cache-dir` feature is enabled and
+    /// uses [`directories::ProjectDirs`] internally.
+    ///
+    /// The returned path is OS-specific and typically resolves to:
+    /// - macOS: `~/Library/Caches/<app>`
+    /// - Linux: `$XDG_CACHE_HOME/<app>` or `~/.cache/<app>`
+    /// - Windows: `%LOCALAPPDATA%\\<org>\\<app>\\cache`
+    ///
+    /// Parameters are passed directly to `ProjectDirs::from(qualifier,
+    /// organization, application)`.
+    ///
+    /// `qualifier` is a DNS-like namespace component used primarily on some
+    /// platforms (notably macOS) to form a unique app identity. Common values
+    /// include:
+    /// - `"com"` (for apps under a `com.<org>.<app>` naming scheme)
+    /// - `"org"` (for apps under an `org.<org>.<app>` naming scheme)
+    ///
+    /// Example:
+    /// `CacheRoot::from_project_dirs("com", "Acme", "WidgetTool")`.
+    #[cfg(feature = "os-cache-dir")]
+    pub fn from_project_dirs(
+        qualifier: &str,
+        organization: &str,
+        application: &str,
+    ) -> io::Result<Self> {
+        let project_dirs =
+            ProjectDirs::from(qualifier, organization, application).ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::NotFound,
+                    "could not resolve an OS cache directory for the provided project identity",
+                )
+            })?;
+
+        Ok(Self {
+            root: project_dirs.cache_dir().to_path_buf(),
+        })
+    }
+
+    /// Create a `CacheRoot` using a newly-created directory under the system
+    /// temporary directory.
+    ///
+    /// This API is available when the `process-scoped-cache` feature is
+    /// enabled (which provides the `tempfile` dependency).
+    ///
+    /// The directory is intentionally persisted and returned as the cache root,
+    /// so it is **not** automatically deleted when this function returns.
+    /// Callers who want cleanup should remove `root.path()` explicitly when
+    /// finished.
+    #[cfg(feature = "process-scoped-cache")]
+    pub fn from_tempdir() -> io::Result<Self> {
+        let root = TempDir::new()?.keep();
+        Ok(Self { root })
     }
 
     /// Return the underlying path for this `CacheRoot`.
@@ -650,6 +709,37 @@ mod tests {
         let absolute = PathBuf::from("/tmp/custom/cache.json");
         let resolved = root.cache_path(CACHE_DIR_NAME, &absolute);
         assert_eq!(resolved, absolute);
+    }
+
+    #[cfg(feature = "os-cache-dir")]
+    #[test]
+    fn from_project_dirs_matches_directories_cache_dir() {
+        let qualifier = "com";
+        let organization = "CacheManagerTests";
+        let application = "CacheManagerOsCacheRoot";
+
+        let expected = ProjectDirs::from(qualifier, organization, application)
+            .expect("project dirs")
+            .cache_dir()
+            .to_path_buf();
+
+        let root = CacheRoot::from_project_dirs(qualifier, organization, application)
+            .expect("from project dirs");
+
+        assert_eq!(root.path(), expected.as_path());
+    }
+
+    #[cfg(feature = "process-scoped-cache")]
+    #[test]
+    fn from_tempdir_creates_existing_writable_root() {
+        let root = CacheRoot::from_tempdir().expect("from tempdir");
+        assert!(root.path().is_dir());
+
+        let probe_group = root.group("probe");
+        let probe_file = probe_group.touch("writable.txt").expect("touch probe");
+        assert!(probe_file.is_file());
+
+        fs::remove_dir_all(root.path()).expect("cleanup temp root");
     }
 
     #[test]
