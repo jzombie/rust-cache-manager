@@ -60,6 +60,7 @@ let expected: std::path::PathBuf = root
 	.join("index.bin");
 assert_eq!(entry, expected);
 
+// Example output path
 println!("{}", entry.display());
 ```
 
