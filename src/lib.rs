@@ -737,8 +737,8 @@ mod tests {
     #[cfg(feature = "os-cache-dir")]
     #[test]
     fn project_dirs_or_not_found_returns_not_found_for_none() {
-        let err = project_dirs_or_not_found(None)
-            .expect_err("none project dirs should map to not found");
+        let err =
+            project_dirs_or_not_found(None).expect_err("none project dirs should map to not found");
         assert_eq!(err.kind(), io::ErrorKind::NotFound);
     }
 
