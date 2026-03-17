@@ -4,15 +4,29 @@
 
 Directory-based cache and artifact path management with discovered `.cache` roots, grouped cache paths, and optional eviction on directory initialization.
 
-- **Tool-agnostic:** any tool or library that can write to the filesystem can use `cache-manager` as a managed cache/artifact path layout layer.
-- **Zero runtime dependencies** in the standard install (library consumers use only the Rust standard library).
-- **Optional feature `process-scoped-cache`:** adds one runtime dependency, [`tempfile`](https://docs.rs/tempfile), to support process/thread scoped sub-caches with automatic cleanup on normal shutdown.
-- **Open-source + commercial-friendly licensing:** dual-licensed under MIT or Apache-2.0, so it can be used in open-source and commercial projects.
-- **Built-in eviction policies:** enforce cache limits by file age, file count, and total bytes, with deterministic oldest-first trimming.
-- **Predictable discovery + root control:** discover `<crate-root>/.cache` automatically or pin an explicit root with `CacheRoot::from_root(...)`.
-- **Composable cache layout API:** create groups/subgroups and entry paths consistently across tools without custom path-joining logic.
-- **Suitable for artifact storage** (build outputs, generated files, intermediate data, etc.).
-- **Suitable for monorepos or multi-crate workspaces** that need centralized cache/artifact management via a shared root (for example with `CacheRoot::from_root(...)`). _This tool was designed to facilitate common cache directory management in a multi-crate workspace._
+> This crate was built to solve a recurring workspace problem we had before adopting it.  
+> Previously, several crates wrote artifacts to different locations with inconsistent eviction policy management.  
+> `cache-manager` provides a single, consistent cache/artifact path layer across the workspace _(and also works outside of `cargo` environments)_.  
+
+- **Core capabilities**
+	- **Tool-agnostic:** any tool or library that can write to the filesystem can use `cache-manager` as a managed cache/artifact path layout layer.
+	- **Zero default runtime dependencies:** the standard install uses only the Rust standard library _(optional features do add additional dependencies)_.
+	- **Built-in eviction policies:** enforce cache limits by file age, file count, and total bytes, with deterministic oldest-first trimming.
+	- **Predictable discovery + root control:** discover `<crate-root>/.cache` automatically or pin an explicit root with `CacheRoot::from_root(...)`.
+	- **Composable cache layout API:** create groups/subgroups and entry paths consistently across tools without custom path-joining logic.
+	- **Artifact-friendly:** suitable for build outputs, generated files, and intermediate data.
+	- **Workspace-friendly:** suitable for monorepos or multi-crate workspaces that need centralized cache/artifact management via a shared root (for example with `CacheRoot::from_root(...)`). 
+
+- **Optional features**
+	- **`process-scoped-cache`:** adds [`tempfile`](https://docs.rs/tempfile) and enables process/thread scoped caches.
+	  - [`CacheRoot::from_tempdir(...)`](#cacheroot-from-tempdir)
+	  - [`ProcessScopedCacheGroup::new(...)`](#processscopedcachegroup-from-root-and-group-path)
+	  - [`ProcessScopedCacheGroup::from_group(...)`](#processscopedcachegroup-from-existing-group)
+	- **`os-cache-dir`:** adds [`directories`](https://docs.rs/directories) and enables OS-native per-user cache roots.
+	  - [`CacheRoot::from_project_dirs(...)`](#os-native-user-cache-root-optional)
+
+- **Licensing**
+	- **Open-source + commercial-friendly:** dual-licensed under [MIT][mit-license-page] or [Apache-2.0][apache-2.0-license-page].
 
 > Tested on macOS, Linux, and Windows.
 
@@ -50,6 +64,7 @@ let expected: std::path::PathBuf = root
 	.join("index.bin");
 assert_eq!(entry, expected);
 
+// Example output path
 println!("{}", entry.display());
 ```
 
@@ -83,17 +98,21 @@ println!("{}", entry_without_touch.display());
 
 ### Filesystem effects
 
-- **Pure path operations:** `CacheRoot::from_root`, `CacheRoot::cache_path`, `CacheRoot::group`, `CacheGroup::entry_path`, `CacheGroup::subgroup`
-- **Discovery helper (cwd/crate-root based):** `CacheRoot::from_discovery`
-- **Create dirs:** `CacheRoot::ensure_group`, `CacheGroup::ensure_dir`
-- **Create dirs + optional eviction:** `CacheRoot::ensure_group_with_policy`, `CacheGroup::ensure_dir_with_policy`
-- **Create file (creates parents):** `CacheGroup::touch`
+- **Core APIs (always available):**
+	- `CacheRoot::from_root`, `CacheRoot::from_discovery`, `CacheRoot::cache_path`, `CacheRoot::group`
+	- `CacheGroup::subgroup`, `CacheGroup::entry_path`
+	- `CacheRoot::ensure_group`, `CacheGroup::ensure_dir`
+	- `CacheRoot::ensure_group_with_policy`, `CacheGroup::ensure_dir_with_policy`
+	- `CacheGroup::touch`
 
-With feature `process-scoped-cache` enabled:
+- **Feature `os-cache-dir`:**
+	- `CacheRoot::from_project_dirs`
 
-- **Process-scoped group:** `ProcessScopedCacheGroup::new`, `ProcessScopedCacheGroup::from_group`
-- **Per-thread subgroup:** `ProcessScopedCacheGroup::thread_group`, `ProcessScopedCacheGroup::ensure_thread_group`
-- **Per-thread entry helpers:** `ProcessScopedCacheGroup::thread_entry_path`, `ProcessScopedCacheGroup::touch_thread_entry`
+- **Feature `process-scoped-cache`:**
+	- `CacheRoot::from_tempdir`
+	- `ProcessScopedCacheGroup::new`, `ProcessScopedCacheGroup::from_group`
+	- `ProcessScopedCacheGroup::thread_group`, `ProcessScopedCacheGroup::ensure_thread_group`
+	- `ProcessScopedCacheGroup::thread_entry_path`, `ProcessScopedCacheGroup::touch_thread_entry`
 
 > Note: eviction only runs when you pass a policy to the `*_with_policy` methods.
 
@@ -142,6 +161,63 @@ not scan for arbitrary directory names — creating a directory named
 `.cache-v2` at the crate root will not cause `from_discovery()` to use it.
 If you want to use a custom cache root, construct it explicitly with
 `CacheRoot::from_root(...)`.
+
+### OS-native user cache root (optional)
+
+Enable feature flag:
+
+```bash
+cargo add cache-manager --features os-cache-dir
+```
+
+Then construct a `CacheRoot` from platform-native user cache directories:
+
+```rust
+use cache_manager::CacheRoot;
+
+let root = CacheRoot::from_project_dirs("com", "ExampleOrg", "ExampleApp")
+	.expect("discover OS cache dir");
+
+let group = root.group("artifacts");
+group.ensure_dir().expect("ensure group");
+```
+
+`from_project_dirs` uses `directories::ProjectDirs` and typically resolves to:
+
+- macOS: `~/Library/Caches/<app>`
+- Linux: `$XDG_CACHE_HOME/<app>` or `~/.cache/<app>`
+- Windows: `%LOCALAPPDATA%\\<org>\\<app>\\cache`
+
+`from_project_dirs(qualifier, organization, application)` parameters:
+
+- `qualifier`: a DNS-like namespace component (commonly `"com"` or `"org"`)
+- `organization`: vendor/team name (for example `"ExampleOrg"`)
+- `application`: app/tool identifier (for example `"ExampleApp"`)
+
+Example identity tuple:
+
+```rust
+use cache_manager::CacheRoot;
+use directories::ProjectDirs;
+use std::fs;
+
+let root: CacheRoot = CacheRoot::from_project_dirs("com", "Acme", "WidgetTool")
+	.expect("discover OS cache dir");
+let got: std::path::PathBuf = root.path().to_path_buf();
+
+let expected: std::path::PathBuf = ProjectDirs::from("com", "Acme", "WidgetTool")
+	.expect("resolve project dirs")
+	.cache_dir()
+	.to_path_buf();
+
+assert_eq!(got, expected);
+
+// If the example writes anything, keep it scoped and remove it explicitly.
+let example_group = root.group("cache-manager-readme-example");
+let probe = example_group.touch("probe.txt").expect("write probe");
+assert!(probe.exists());
+fs::remove_dir_all(example_group.path()).expect("cleanup example group");
+```
 
 
 ### Eviction Policy
@@ -258,8 +334,26 @@ Or, if editing `Cargo.toml` manually:
 cache-manager = { version = "<latest>", features = ["process-scoped-cache"] }
 ```
 
-Use `ProcessScopedCacheGroup` to create an auto-generated process subdirectory
-under your assigned root/group, then derive a stable subgroup for each thread:
+#### CacheRoot from tempdir
+
+Create a temporary cache root backed by a persisted temp directory:
+
+```rust
+#[cfg(feature = "process-scoped-cache")]
+fn example_temp_root() {
+	let root = cache_manager::CacheRoot::from_tempdir().expect("temp cache root");
+	let group = root.group("artifacts");
+	group.ensure_dir().expect("ensure group");
+
+	// `from_tempdir` intentionally persists the directory; clean up when done.
+	std::fs::remove_dir_all(root.path()).expect("cleanup temp root");
+}
+```
+
+#### ProcessScopedCacheGroup from root and group path
+
+Use this constructor when you have a `CacheRoot` plus a relative group path.
+It creates a process-scoped directory under `root.group(...)`.
 
 ```rust
 #[cfg(feature = "process-scoped-cache")]
@@ -311,6 +405,30 @@ fn main() {
 
 #[cfg(not(feature = "process-scoped-cache"))]
 fn main() {}
+```
+
+#### ProcessScopedCacheGroup from existing group
+
+Use this constructor when you already have a `CacheGroup` (for example,
+shared or precomputed by higher-level setup) and want process scoping from
+that existing group.
+
+```rust
+#[cfg(feature = "process-scoped-cache")]
+fn from_group_example() {
+	use cache_manager::{CacheGroup, CacheRoot, ProcessScopedCacheGroup};
+
+	let root: CacheRoot = CacheRoot::from_root("/tmp/project");
+	let base_group: CacheGroup = root.group("artifacts/session");
+
+	let scoped: ProcessScopedCacheGroup =
+		ProcessScopedCacheGroup::from_group(base_group).expect("create process-scoped cache");
+	let thread_entry = scoped
+		.touch_thread_entry("v1/index.bin")
+		.expect("touch thread entry");
+
+	assert!(thread_entry.starts_with(scoped.path()));
+}
 ```
 
 Behavior notes:
@@ -379,7 +497,7 @@ println!("entry path: {}", entry_path.display());
 
 `cache-manager` is primarily distributed under the terms of both the MIT license and the Apache License (Version 2.0).
 
-See [LICENSE-APACHE](./LICENSE-APACHE) and [LICENSE-MIT](./LICENSE-MIT) for details.
+See [LICENSE-APACHE][apache-2.0-license-page] and [LICENSE-MIT][mit-license-page] for details.
 
 [rust-src-page]: https://www.rust-lang.org/
 [rust-logo]: https://img.shields.io/badge/Made%20with-Rust-black
@@ -387,10 +505,10 @@ See [LICENSE-APACHE](./LICENSE-APACHE) and [LICENSE-MIT](./LICENSE-MIT) for deta
 [crates-page]: https://crates.io/crates/cache-manager
 [crates-badge]: https://img.shields.io/crates/v/cache-manager.svg
 
-[mit-license-page]: ./LICENSE-MIT
+[mit-license-page]: https://raw.githubusercontent.com/jzombie/rust-cache-manager/refs/heads/main/LICENSE-MIT
 [mit-license-badge]: https://img.shields.io/badge/license-MIT-blue.svg
 
-[apache-2.0-license-page]: ./LICENSE-APACHE
+[apache-2.0-license-page]: https://raw.githubusercontent.com/jzombie/rust-cache-manager/refs/heads/main/LICENSE-APACHE
 [apache-2.0-license-badge]: https://img.shields.io/badge/license-Apache%202.0-blue.svg
 
 [coveralls-page]: https://coveralls.io/github/jzombie/rust-cache-manager?branch=main
