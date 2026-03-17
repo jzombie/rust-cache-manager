@@ -19,8 +19,8 @@ process-scoped-cache = ["dep:tempfile"]
 os-cache-dir = ["dep:directories"]
 
 [dependencies]
-tempfile = { workspace = true, optional = true }
 directories = { version = "6.0.0", optional = true }
+tempfile = { workspace = true, optional = true }
 
 [dev-dependencies]
 tempfile.workspace = true
