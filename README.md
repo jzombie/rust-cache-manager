@@ -14,8 +14,12 @@ Directory-based cache and artifact path management with discovered `.cache` root
 	- **Workspace-friendly:** suitable for monorepos or multi-crate workspaces that need centralized cache/artifact management via a shared root (for example with `CacheRoot::from_root(...)`). _This tool was designed to facilitate common cache directory management in a multi-crate workspace._
 
 - **Optional features**
-	- **`process-scoped-cache`:** adds [`tempfile`](https://docs.rs/tempfile) and enables process/thread scoped caches (`ProcessScopedCacheGroup`, `CacheRoot::from_tempdir(...)`).
-	- **`os-cache-dir`:** adds [`directories`](https://docs.rs/directories) and enables OS-native per-user cache roots (`CacheRoot::from_project_dirs(...)`).
+	- **`process-scoped-cache`:** adds [`tempfile`](https://docs.rs/tempfile) and enables process/thread scoped caches.
+	  - [`CacheRoot::from_tempdir(...)`](#cacheroot-from-tempdir)
+	  - [`ProcessScopedCacheGroup::new(...)`](#processscopedcachegroup-from-root-and-group-path)
+	  - [`ProcessScopedCacheGroup::from_group(...)`](#processscopedcachegroup-from-existing-group)
+	- **`os-cache-dir`:** adds [`directories`](https://docs.rs/directories) and enables OS-native per-user cache roots.
+	  - [`CacheRoot::from_project_dirs(...)`](#os-native-user-cache-root-optional)
 
 - **Licensing**
 	- **Open-source + commercial-friendly:** dual-licensed under [MIT][mit-license-page] or [Apache-2.0][apache-2.0-license-page].
@@ -325,6 +329,8 @@ Or, if editing `Cargo.toml` manually:
 cache-manager = { version = "<latest>", features = ["process-scoped-cache"] }
 ```
 
+#### CacheRoot from tempdir
+
 Create a temporary cache root backed by a persisted temp directory:
 
 ```rust
@@ -339,8 +345,10 @@ fn example_temp_root() {
 }
 ```
 
-Use `ProcessScopedCacheGroup` to create an auto-generated process subdirectory
-under your assigned root/group, then derive a stable subgroup for each thread:
+#### ProcessScopedCacheGroup from root and group path
+
+Use this constructor when you have a `CacheRoot` plus a relative group path.
+It creates a process-scoped directory under `root.group(...)`.
 
 ```rust
 #[cfg(feature = "process-scoped-cache")]
@@ -392,6 +400,30 @@ fn main() {
 
 #[cfg(not(feature = "process-scoped-cache"))]
 fn main() {}
+```
+
+#### ProcessScopedCacheGroup from existing group
+
+Use this constructor when you already have a `CacheGroup` (for example,
+shared or precomputed by higher-level setup) and want process scoping from
+that existing group.
+
+```rust
+#[cfg(feature = "process-scoped-cache")]
+fn from_group_example() {
+	use cache_manager::{CacheGroup, CacheRoot, ProcessScopedCacheGroup};
+
+	let root: CacheRoot = CacheRoot::from_root("/tmp/project");
+	let base_group: CacheGroup = root.group("artifacts/session");
+
+	let scoped: ProcessScopedCacheGroup =
+		ProcessScopedCacheGroup::from_group(base_group).expect("create process-scoped cache");
+	let thread_entry = scoped
+		.touch_thread_entry("v1/index.bin")
+		.expect("touch thread entry");
+
+	assert!(thread_entry.starts_with(scoped.path()));
+}
 ```
 
 Behavior notes:
