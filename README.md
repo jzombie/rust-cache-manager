@@ -6,7 +6,7 @@ Directory-based cache and artifact path management with discovered `.cache` root
 
 - **Core capabilities**
 	- **Tool-agnostic:** any tool or library that can write to the filesystem can use `cache-manager` as a managed cache/artifact path layout layer.
-	- **Zero runtime dependencies:** the standard install uses only the Rust standard library.
+	- **Zero default runtime dependencies:** the standard install uses only the Rust standard library _(optional features do add additional dependencies)_.
 	- **Built-in eviction policies:** enforce cache limits by file age, file count, and total bytes, with deterministic oldest-first trimming.
 	- **Predictable discovery + root control:** discover `<crate-root>/.cache` automatically or pin an explicit root with `CacheRoot::from_root(...)`.
 	- **Composable cache layout API:** create groups/subgroups and entry paths consistently across tools without custom path-joining logic.
