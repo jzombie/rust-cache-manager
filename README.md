@@ -8,25 +8,60 @@ Directory-based cache and artifact path management with discovered `.cache` root
 > Previously, several crates wrote artifacts to different locations with inconsistent eviction policy management.  
 > `cache-manager` provides a single, consistent cache/artifact path layer across the workspace _(and also works outside of `cargo` environments)_.  
 
-- **Core capabilities**
-	- **Tool-agnostic:** any tool or library that can write to the filesystem can use `cache-manager` as a managed cache/artifact path layout layer.
-	- **Zero default runtime dependencies:** the standard install uses only the Rust standard library _(optional features do add additional dependencies)_.
-	- **Built-in eviction policies:** enforce cache limits by file age, file count, and total bytes, with deterministic oldest-first trimming.
-	- **Predictable discovery + root control:** discover `<crate-root>/.cache` automatically or pin an explicit root with `CacheRoot::from_root(...)`.
-	- **Composable cache layout API:** create groups/subgroups and entry paths consistently across tools without custom path-joining logic.
-	- **Artifact-friendly:** suitable for build outputs, generated files, and intermediate data.
-	- **Workspace-friendly:** suitable for monorepos or multi-crate workspaces that need centralized cache/artifact management via a shared root (for example with `CacheRoot::from_root(...)`). 
+## Quick start
 
-- **Optional features**
-	- **`process-scoped-cache`:** adds [`tempfile`](https://docs.rs/tempfile) and enables process/thread scoped caches.
-	  - [`CacheRoot::from_tempdir(...)`](#cacheroot-from-tempdir)
-	  - [`ProcessScopedCacheGroup::new(...)`](#processscopedcachegroup-from-root-and-group-path)
-	  - [`ProcessScopedCacheGroup::from_group(...)`](#processscopedcachegroup-from-existing-group)
-	- **`os-cache-dir`:** adds [`directories`](https://docs.rs/directories) and enables OS-native per-user cache roots.
-	  - [`CacheRoot::from_project_dirs(...)`](#os-native-user-cache-root-optional)
+```rust
+use cache_manager::CacheRoot;
 
-- **Licensing**
-	- **Open-source + commercial-friendly:** dual-licensed under [MIT][mit-license-page] or [Apache-2.0][apache-2.0-license-page].
+// Discover the workspace or crate root, anchor .cache there
+let root = CacheRoot::from_discovery().expect("discover cache root");
+
+// Create (or resume) a group for artifacts
+let group = root.group("artifacts/json");
+group.ensure_dir().expect("ensure group dir");
+
+// Create or refresh a cache entry (creates parent dirs automatically)
+let entry = group.touch("v1/index.bin").expect("touch entry");
+println!("{}", entry.display());
+```
+
+Composing explicit paths without `touch` (hand the path to another tool):
+
+```rust
+use cache_manager::CacheRoot;
+use std::fs;
+
+let root = CacheRoot::from_discovery().expect("discover cache root");
+let group = root.group("artifacts/json");
+group.ensure_dir().expect("ensure group dir");
+
+let entry = group.entry_path("v1/index.bin");
+fs::create_dir_all(entry.parent().expect("entry parent"))
+	.expect("create entry parent");
+fs::write(&entry, b"artifact bytes").expect("write artifact");
+println!("{}", entry.display());
+```
+
+## Core capabilities
+
+- **Tool-agnostic:** any tool or library that can write to the filesystem can use `cache-manager` as a managed cache/artifact path layout layer.
+- **Zero default runtime dependencies:** the standard install uses only the Rust standard library _(optional features do add additional dependencies)_.
+- **Built-in eviction policies:** enforce cache limits by file age, file count, and total bytes, with deterministic oldest-first trimming.
+- **Predictable discovery + root control:** discover `<workspace-or-crate-root>/.cache` automatically or pin an explicit root with `CacheRoot::from_root(...)`.
+- **Composable cache layout API:** create groups/subgroups and entry paths consistently across tools without custom path-joining logic.
+- **Artifact-friendly:** suitable for build outputs, generated files, and intermediate data.
+- **Workspace-friendly:** suitable for monorepos or multi-crate workspaces that need centralized cache/artifact management via a shared root (for example with `CacheRoot::from_root(...)`).
+
+## Optional features
+
+- **`process-scoped-cache`:** adds [`tempfile`](https://docs.rs/tempfile) and enables process/thread scoped caches.
+  - [`CacheRoot::from_tempdir(...)`](#cacheroot-from-tempdir)
+  - [`ProcessScopedCacheGroup::new(...)`](#processscopedcachegroup-from-root-and-group-path)
+  - [`ProcessScopedCacheGroup::from_group(...)`](#processscopedcachegroup-from-existing-group)
+- **`os-cache-dir`:** adds [`directories`](https://docs.rs/directories) and enables OS-native per-user cache roots.
+  - [`CacheRoot::from_project_dirs(...)`](#os-native-user-cache-root-optional)
+
+- **Open-source + commercial-friendly:** dual-licensed under [MIT][mit-license-page] or [Apache-2.0][apache-2.0-license-page].
 
 > Tested on macOS, Linux, and Windows.
 
@@ -39,62 +74,6 @@ Directory-based cache and artifact path management with discovered `.cache` root
 - Entries: files under a group (for example `v1/index.bin`).
 
 `CacheRoot` and `CacheGroup` are lightweight path objects. Constructing them does not create directories.
-
-### Quick start
-
-Using `touch` (convenient when you want this crate to create the file):
-
-```rust
-use cache_manager::{CacheGroup, CacheRoot};
-
-let root: CacheRoot = CacheRoot::from_root("/tmp/project");
-let group: CacheGroup = root.group("artifacts/json");
-
-// Create the group directory if needed
-group.ensure_dir().expect("ensure group");
-
-// `index.bin` is just an example artifact filename that another program might generate
-let entry: std::path::PathBuf = group.touch("v1/index.bin").expect("touch entry");
-
-let expected: std::path::PathBuf = root
-	.path()
-	.join("artifacts")
-	.join("json")
-	.join("v1")
-	.join("index.bin");
-assert_eq!(entry, expected);
-
-// Example output path
-println!("{}", entry.display());
-```
-
-Without `touch` (compute the path for a separate tool, then write with your own I/O):
-
-```rust
-use cache_manager::{CacheGroup, CacheRoot};
-use std::fs;
-
-let root: CacheRoot = CacheRoot::from_root("/tmp/project");
-let group: CacheGroup = root.group("artifacts/json");
-
-group.ensure_dir().expect("ensure group");
-
-// This is the path you can hand to another tool/process
-let entry_without_touch: std::path::PathBuf = group.entry_path("v1/index.bin");
-
-let expected: std::path::PathBuf = root
-	.path()
-	.join("artifacts")
-	.join("json")
-	.join("v1")
-	.join("index.bin");
-assert_eq!(entry_without_touch, expected);
-
-fs::create_dir_all(entry_without_touch.parent().expect("entry parent"))
-	.expect("create entry parent");
-fs::write(&entry_without_touch, b"artifact bytes").expect("write artifact");
-println!("{}", entry_without_touch.display());
-```
 
 ### Filesystem effects
 
@@ -116,40 +95,42 @@ println!("{}", entry_without_touch.display());
 
 > Note: eviction only runs when you pass a policy to the `*_with_policy` methods.
 
-### Discovering cache paths
+### Cache root discovery
 
-Discover a cache path for the current crate/workspace and resolve an entry path.
+Discover a cache root by searching parent directories for a Cargo workspace or crate root.
 
 > Note: `CacheRoot::from_discovery()?.cache_path(...)` only computes a filesystem path — it does not create directories or files.
 
 Behavior:
 
-- Searches upward from the current working directory for a `Cargo.toml` and uses `<crate-root>/.cache` when found; otherwise it falls back to `<cwd>/.cache`.
-- The discovered anchor (`crate root` or `cwd`) is canonicalized when possible to avoid surprising
-  differences between logically-equal paths.
+- Searches upward from the current working directory for a `Cargo.toml`.
+- If a `Cargo.toml` containing `[workspace]` is found, uses `<workspace-root>/.cache`.
+- Otherwise uses the nearest `<crate-root>/.cache`.
+- Falls back to `<cwd>/.cache` when no `Cargo.toml` exists.
+- The discovered anchor is canonicalized when possible.
 - If the `relative_path` argument is absolute, it is returned unchanged.
 
 ```rust
 use cache_manager::CacheRoot;
 use std::path::Path;
 
-// Compute a path like <crate-root>/.cache/tool/data.bin without creating it
-let cache_path: std::path::PathBuf = CacheRoot::from_discovery()
+// Compute a path like <workspace-root>/.cache/tool/data.bin
+let cache_path = CacheRoot::from_discovery()
 	.expect("discover cache root")
 	.cache_path("tool", "data.bin");
 println!("cache path: {}", cache_path.display());
 
-// Expected relative location under the discovered crate root:
+// Relative location under the discovered root:
 assert!(cache_path.ends_with(Path::new(".cache").join("tool").join("data.bin")));
 
 // The call only computes the path; it does not create files or directories
 assert!(!cache_path.exists());
 
-// If you already have an absolute entry path, it's returned unchanged:
-let absolute: std::path::PathBuf = std::path::PathBuf::from("/tmp/custom/cache.json");
-let kept: std::path::PathBuf = CacheRoot::from_discovery()
+// Absolute paths are returned unchanged:
+let absolute = Path::new("/tmp/custom/cache.json");
+let kept = CacheRoot::from_discovery()
 	.expect("discover cache root")
-	.cache_path("tool", &absolute);
+	.cache_path("tool", absolute);
 assert_eq!(kept, absolute);
 ```
 
@@ -437,36 +418,9 @@ Behavior notes:
 - The process subdirectory is deleted when the handle is dropped during normal process shutdown.
 - Cleanup is best-effort; abnormal termination (for example `SIGKILL` or crash) can leave stale directories.
 
-### Additional examples
+### Per-subdirectory policies
 
-Create or update a cache entry (ensures parent directories exist):
-
-```rust
-use cache_manager::{CacheGroup, CacheRoot};
-
-let root: CacheRoot = CacheRoot::from_root("/tmp/project");
-let group: CacheGroup = root.group("artifacts/json");
-
-let entry: std::path::PathBuf = group.touch("v1/index.bin").expect("touch entry");
-
-let expected: std::path::PathBuf = root
-	.path()
-	.join("artifacts")
-	.join("json")
-	.join("v1")
-	.join("index.bin");
-assert_eq!(entry, expected);
-
-println!("touched: {}", entry.display());
-```
-
-#### Per-subdirectory policies
-
-Different subdirectories under the same `CacheRoot` can use independent policies; call `ensure_dir_with_policy` on each `CacheGroup` separately to apply per-group rules.
-
-Note: calling `CacheGroup::ensure_dir()` is equivalent to `CacheGroup::ensure_dir_with_policy(None)`. Likewise, `CacheRoot::ensure_group(...)` behaves the same as `CacheRoot::ensure_group_with_policy(..., None)`.
-
-#### Get the root path
+### Get the root path
 
 To obtain the underlying filesystem path for a `CacheRoot`, use `path()`:
 
