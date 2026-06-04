@@ -10,7 +10,7 @@ Directory-based cache and artifact path management with discovered `.cache` root
 
 ## Quick start
 
-### Add cache-manager to your project
+### Add `cache-manager` to your project
 
 ```bash
 cargo add cache-manager
