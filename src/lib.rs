@@ -396,10 +396,10 @@ fn find_crate_root(start: &Path) -> Option<PathBuf> {
             if nearest.is_none() {
                 nearest = Some(current.clone());
             }
-            if let Ok(content) = fs::read_to_string(&cargo_path) {
-                if content.lines().any(|line| line.trim() == "[workspace]") {
-                    return Some(current);
-                }
+            if let Ok(content) = fs::read_to_string(&cargo_path)
+                && content.lines().any(|line| line.trim() == "[workspace]")
+            {
+                return Some(current);
             }
         }
         if !current.pop() {
