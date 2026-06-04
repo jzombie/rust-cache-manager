@@ -90,7 +90,8 @@ pub struct CacheRoot {
 impl CacheRoot {
     /// Discover the cache root by searching parent directories for `Cargo.toml`.
     ///
-    /// The discovered cache root is always `<crate-root-or-cwd>/.cache`.
+    /// The discovered cache root is always
+    /// `<workspace-root-or-crate-root-or-cwd>/.cache`.
     ///
     /// Note: `from_discovery` only uses the configured `CACHE_DIR_NAME` (by
     /// default `.cache`) as the discovered cache directory. It does not
@@ -388,12 +389,21 @@ fn current_thread_cache_group_id() -> u64 {
 
 fn find_crate_root(start: &Path) -> Option<PathBuf> {
     let mut current = start.to_path_buf();
+    let mut nearest: Option<PathBuf> = None;
     loop {
-        if current.join(CARGO_TOML_FILE_NAME).is_file() {
-            return Some(current);
+        let cargo_path = current.join(CARGO_TOML_FILE_NAME);
+        if cargo_path.is_file() {
+            if nearest.is_none() {
+                nearest = Some(current.clone());
+            }
+            if let Ok(content) = fs::read_to_string(&cargo_path)
+                && content.lines().any(|line| line.trim() == "[workspace]")
+            {
+                return Some(current);
+            }
         }
         if !current.pop() {
-            return None;
+            return nearest;
         }
     }
 }
@@ -583,6 +593,68 @@ mod tests {
             .expect("canonicalize crate root")
             .join(CACHE_DIR_NAME);
         assert_eq!(got, expected);
+    }
+
+    #[test]
+    fn from_discovery_prefers_workspace_root_over_subcrate() {
+        let tmp = TempDir::new().expect("tempdir");
+        let workspace_root = tmp.path().join("workspace");
+        let sub_crate = workspace_root.join("crates").join("my-crate");
+        fs::create_dir_all(&sub_crate).expect("create sub-crate");
+        // Workspace root Cargo.toml with [workspace] section.
+        fs::write(
+            workspace_root.join(CARGO_TOML_FILE_NAME),
+            "[workspace]\n[package]\nname='workspace-root'\nversion='0.1.0'\nedition='2024'\n",
+        )
+        .expect("write workspace Cargo.toml");
+        // Sub-crate Cargo.toml without [workspace].
+        fs::write(
+            sub_crate.join(CARGO_TOML_FILE_NAME),
+            "[package]\nname='my-crate'\nversion='0.1.0'\nedition='2024'\n",
+        )
+        .expect("write sub-crate Cargo.toml");
+
+        let _guard = CwdGuard::swap_to(&sub_crate).expect("set cwd");
+        let cache = CacheRoot::from_discovery().expect("discover");
+        let got = cache.path().to_path_buf();
+        let expected = workspace_root
+            .canonicalize()
+            .expect("canonicalize workspace root")
+            .join(CACHE_DIR_NAME);
+        assert_eq!(got, expected);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn from_discovery_skips_permission_denied_cargo_toml_and_falls_back_to_cwd() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let tmp = TempDir::new().expect("tempdir");
+        fs::write(tmp.path().join(CARGO_TOML_FILE_NAME), "[workspace]").expect("write Cargo.toml");
+        // Remove read permission — is_file() returns true but
+        // read_to_string fails with PermissionDenied.
+        fs::set_permissions(
+            tmp.path().join(CARGO_TOML_FILE_NAME),
+            std::fs::Permissions::from_mode(0o000),
+        )
+        .expect("set permissions");
+
+        let _guard = CwdGuard::swap_to(tmp.path()).expect("set cwd");
+        let cache = CacheRoot::from_discovery().expect("discover");
+        // Falls back to cwd/.cache since Cargo.toml can't be read.
+        let expected = tmp
+            .path()
+            .canonicalize()
+            .expect("canonicalize")
+            .join(CACHE_DIR_NAME);
+        assert_eq!(cache.path(), expected);
+
+        // Restore so TempDir cleanup can remove the file.
+        fs::set_permissions(
+            tmp.path().join(CARGO_TOML_FILE_NAME),
+            std::fs::Permissions::from_mode(0o644),
+        )
+        .expect("restore permissions");
     }
 
     #[test]
