@@ -624,6 +624,40 @@ mod tests {
         assert_eq!(got, expected);
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn from_discovery_skips_permission_denied_cargo_toml_and_falls_back_to_cwd() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let tmp = TempDir::new().expect("tempdir");
+        fs::write(tmp.path().join(CARGO_TOML_FILE_NAME), "[workspace]")
+            .expect("write Cargo.toml");
+        // Remove read permission — is_file() returns true but
+        // read_to_string fails with PermissionDenied.
+        fs::set_permissions(
+            tmp.path().join(CARGO_TOML_FILE_NAME),
+            std::fs::Permissions::from_mode(0o000),
+        )
+        .expect("set permissions");
+
+        let _guard = CwdGuard::swap_to(tmp.path()).expect("set cwd");
+        let cache = CacheRoot::from_discovery().expect("discover");
+        // Falls back to cwd/.cache since Cargo.toml can't be read.
+        let expected = tmp
+            .path()
+            .canonicalize()
+            .expect("canonicalize")
+            .join(CACHE_DIR_NAME);
+        assert_eq!(cache.path(), expected);
+
+        // Restore so TempDir cleanup can remove the file.
+        fs::set_permissions(
+            tmp.path().join(CARGO_TOML_FILE_NAME),
+            std::fs::Permissions::from_mode(0o644),
+        )
+        .expect("restore permissions");
+    }
+
     #[test]
     fn from_root_supports_arbitrary_path_and_grouping() {
         let tmp = TempDir::new().expect("tempdir");
