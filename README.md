@@ -10,6 +10,10 @@ Directory-based cache and artifact path management with discovered `.cache` root
 
 ## Quick start
 
+```bash
+cargo add cache-manager
+```
+
 ```rust
 use cache_manager::CacheRoot;
 
