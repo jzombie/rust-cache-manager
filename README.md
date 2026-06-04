@@ -75,7 +75,7 @@ println!("{}", entry.display());
 
 > Tested on macOS, Linux, and Windows.
 
-## Usage
+## Reference
 
 ### Mental model: root -> groups -> entries
 
