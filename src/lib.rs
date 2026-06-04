@@ -630,8 +630,7 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
 
         let tmp = TempDir::new().expect("tempdir");
-        fs::write(tmp.path().join(CARGO_TOML_FILE_NAME), "[workspace]")
-            .expect("write Cargo.toml");
+        fs::write(tmp.path().join(CARGO_TOML_FILE_NAME), "[workspace]").expect("write Cargo.toml");
         // Remove read permission — is_file() returns true but
         // read_to_string fails with PermissionDenied.
         fs::set_permissions(
