@@ -10,9 +10,13 @@ Directory-based cache and artifact path management with discovered `.cache` root
 
 ## Quick start
 
+### Add cache-manager to your project
+
 ```bash
 cargo add cache-manager
 ```
+
+### Create a cache entry
 
 ```rust
 use cache_manager::CacheRoot;
@@ -28,6 +32,8 @@ group.ensure_dir().expect("ensure group dir");
 let entry = group.touch("v1/index.bin").expect("touch entry");
 println!("{}", entry.display());
 ```
+
+### Pass a path to another tool
 
 Composing explicit paths without `touch` (hand the path to another tool):
 
