@@ -71,7 +71,13 @@ jobs:
             ${{ runner.os }}-cargo-${{ steps.rustc.outputs.hash }}-${{ steps.lockfile.outputs.hash }}-
 
       - name: Test
-        run: cargo test --workspace --all-features --lib --bins --tests --examples -- --include-ignored
+        run: cargo test --workspace --all-features --lib --bins --tests --examples --doc -- --include-ignored
+
+      - name: Test doctests with default features
+        # Feature-gated README examples must also compile with default
+        # features (os-cache-dir off) — the all-features run above cannot
+        # catch that class of breakage.
+        run: cargo test --workspace --doc
 
   test:
     name: test

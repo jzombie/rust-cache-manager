@@ -173,6 +173,13 @@ impl CacheRoot {
         &self.root
     }
 
+    // --- combined resolution -------------------------------------------------
+    //
+    // [`CacheResolver`] implements the "no surprises" contract documented on
+    // that type: fixed precedence, no silent `<cwd>/.cache` scattering, and
+    // the winning source always reported. Prefer it over hand-rolled
+    // `match env::var(...)` chains in binaries.
+
     /// Build a `CacheGroup` for a relative subdirectory under this root.
     pub fn group<P: AsRef<Path>>(&self, relative_group: P) -> CacheGroup {
         let path = self.root.join(relative_group.as_ref());
@@ -217,6 +224,168 @@ impl CacheRoot {
         }
         self.group(cache_dir).entry_path(rel)
     }
+}
+
+/// Where a [`CacheResolver`]-resolved cache root came from. Returned alongside
+/// the root so binaries can announce it (e.g.
+/// `cache: ~/Library/Caches/com.acme.tool (os-cache-dir)`) — cache placement
+/// must never be silent.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CacheSource {
+    /// Explicit `--dir`-style path; wins over everything.
+    Explicit,
+    /// Environment variable (see [`CacheResolver::env_var`]).
+    EnvVar,
+    /// Cargo workspace/crate discovery (`<workspace>/.cache`).
+    ProjectDiscovery,
+    /// OS-native per-user cache dir (`os-cache-dir` feature).
+    OsCacheDir,
+    /// Last-resort `<cwd>/.cache`; only reachable when the caller explicitly
+    /// sets [`CacheResolver::allow_cwd_fallback`].
+    CwdFallback,
+}
+
+/// Combined cache-root resolution with a fixed, documented precedence and no
+/// silent `<cwd>/.cache` scattering.
+///
+/// Precedence (first hit wins, the rest are never consulted):
+/// 1. [`CacheResolver::explicit`] — an explicit path (CLI `--dir`).
+/// 2. [`CacheResolver::env_var`] — a non-empty env var value.
+/// 3. Cargo workspace discovery (`<workspace>/.cache`), unless
+///    [`CacheResolver::allow_project_discovery`] is false.
+/// 4. OS user cache dir for [`CacheResolver::project_dirs`] (requires the
+///    `os-cache-dir` feature; without it this arm is compiled out).
+///
+/// When nothing matches, `resolve()` returns `Err` (kind `NotFound`) naming
+/// the env var and OS identity that would fix it — it NEVER silently falls
+/// back to `<cwd>/.cache`. Opt into that legacy behavior per call site with
+/// [`CacheResolver::allow_cwd_fallback`] (default `false`).
+///
+/// Recommended convention: binaries announce the winner on stderr at startup,
+/// e.g. `tracing::info!("cache: {} ({:?})", root.path().display(), source)`.
+///
+/// Zero breaking change: [`CacheRoot::from_discovery`] keeps its exact
+/// current semantics (including the CWD fallback) for existing users.
+#[derive(Clone, Debug)]
+pub struct CacheResolver {
+    /// Explicit path; wins over everything. Usually a CLI `--dir` flag.
+    pub explicit: Option<PathBuf>,
+    /// Env var name consulted next (e.g. `"WINDOWS_HEADLESS_QEMU_DIR"`).
+    /// Only non-empty values count; unset-or-empty falls through.
+    pub env_var: Option<String>,
+    /// Consult Cargo workspace discovery. Default `true`.
+    pub allow_project_discovery: bool,
+    /// OS cache identity `(qualifier, organization, application)` passed to
+    /// `ProjectDirs::from`. `None` (default) disables the OS-cache arm.
+    /// Available only with the `os-cache-dir` feature.
+    #[cfg(feature = "os-cache-dir")]
+    pub project_dirs: Option<(String, String, String)>,
+    /// DANGEROUS, default `false`: allow `<cwd>/.cache` as a last resort
+    /// (the [`CacheSource::CwdFallback`] source). Enabling this is a
+    /// conscious, greppable opt-in — each shell CWD grows its own cache.
+    pub allow_cwd_fallback: bool,
+}
+
+impl Default for CacheResolver {
+    fn default() -> Self {
+        Self {
+            explicit: None,
+            env_var: None,
+            allow_project_discovery: true,
+            #[cfg(feature = "os-cache-dir")]
+            project_dirs: None,
+            allow_cwd_fallback: false,
+        }
+    }
+}
+
+impl CacheResolver {
+    /// Resolve to `(root, source)` following the documented precedence.
+    pub fn resolve(&self) -> io::Result<(CacheRoot, CacheSource)> {
+        // 1. Explicit path.
+        if let Some(p) = &self.explicit {
+            return Ok((CacheRoot::from_root(p.clone()), CacheSource::Explicit));
+        }
+        // 2. Env var (non-empty values only).
+        if let Some(name) = &self.env_var
+            && let Ok(v) = env::var(name)
+            && !v.is_empty()
+        {
+            return Ok((CacheRoot::from_root(v), CacheSource::EnvVar));
+        }
+        // 3. Cargo workspace discovery (distinguishes "found a workspace"
+        // from "would fall back to CWD" — unlike from_discovery, no silent
+        // fallback here).
+        if self.allow_project_discovery
+            && let Some(anchor) = discover_anchor()?
+        {
+            return Ok((
+                CacheRoot {
+                    root: anchor.join(CACHE_DIR_NAME),
+                },
+                CacheSource::ProjectDiscovery,
+            ));
+        }
+        // 4. OS user cache dir.
+        #[cfg(feature = "os-cache-dir")]
+        if let Some((q, o, a)) = &self.project_dirs {
+            let dirs = project_dirs_or_not_found(ProjectDirs::from(q, o, a))?;
+            return Ok((
+                CacheRoot {
+                    root: dirs.cache_dir().to_path_buf(),
+                },
+                CacheSource::OsCacheDir,
+            ));
+        }
+        // 5. Explicit last-resort opt-in only.
+        if self.allow_cwd_fallback {
+            let cwd = env::current_dir()?;
+            let anchor = cwd.canonicalize().unwrap_or(cwd);
+            return Ok((
+                CacheRoot {
+                    root: anchor.join(CACHE_DIR_NAME),
+                },
+                CacheSource::CwdFallback,
+            ));
+        }
+        Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            format!(
+                "no cache location: {}{}; {}",
+                if self.allow_project_discovery {
+                    "no Cargo workspace above the working directory"
+                } else {
+                    "project discovery is disabled"
+                },
+                match &self.env_var {
+                    Some(n) => format!(" and ${n} is unset"),
+                    None => " and no env-var override is configured".to_string(),
+                },
+                match self.os_identity_hint() {
+                    Some(h) => format!("no OS cache identity matched ({h})"),
+                    None => "no OS cache identity is configured".to_string(),
+                }
+            ),
+        ))
+    }
+
+    /// Human hint naming the configured OS identity (or `None`).
+    fn os_identity_hint(&self) -> Option<String> {
+        #[cfg(feature = "os-cache-dir")]
+        if let Some((q, o, a)) = &self.project_dirs {
+            return Some(format!("{q}.{o}.{a}"));
+        }
+        let _ = &self.env_var;
+        None
+    }
+}
+
+/// Anchor dir for project discovery (`Some`) or `None` when no `Cargo.toml`
+/// exists above the CWD. Split out of [`find_crate_root`] so the resolver can
+/// tell "found a workspace" from "would fall back to CWD".
+fn discover_anchor() -> io::Result<Option<PathBuf>> {
+    let cwd = env::current_dir()?;
+    Ok(find_crate_root(&cwd).map(|a| a.canonicalize().unwrap_or(a)))
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -786,6 +955,247 @@ mod tests {
         let absolute = PathBuf::from("/tmp/custom/cache.json");
         let resolved = root.cache_path(CACHE_DIR_NAME, &absolute);
         assert_eq!(resolved, absolute);
+    }
+
+    // --- CacheResolver ------------------------------------------------------
+    //
+    // Every test below holds CwdGuard (global CWD mutex) even when it only
+    // mutates env vars: env is process-global too, and the shared lock is
+    // what serializes these tests against each other and the CWD tests.
+
+    /// RAII guard for a process-global env var: captures the prior value on
+    /// creation and restores it in `Drop`, so a panicking assertion can never
+    /// poison the environment for later tests. Bind as `_env_guard` and keep
+    /// it alive for the whole test.
+    struct EnvGuard {
+        name: String,
+        prior: Option<String>,
+    }
+
+    impl EnvGuard {
+        fn take(name: &str) -> Self {
+            Self {
+                name: name.to_string(),
+                prior: env::var(name).ok(),
+            }
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            unsafe {
+                match &self.prior {
+                    Some(v) => env::set_var(&self.name, v),
+                    None => env::remove_var(&self.name),
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn resolver_explicit_wins_over_everything() {
+        let tmp = TempDir::new().expect("tempdir");
+        let _guard = CwdGuard::swap_to(tmp.path()).expect("set cwd");
+        let name = "CACHE_MANAGER_TEST_RESOLVER_EXPLICIT";
+        let _env_guard = EnvGuard::take(name);
+        unsafe { env::set_var(name, tmp.path().join("env-root")) };
+        // Also plant a workspace: explicit must still win over discovery.
+        fs::write(tmp.path().join("Cargo.toml"), "[workspace]\n").expect("write cargo");
+
+        let explicit = tmp.path().join("explicit-root");
+        let r = CacheResolver {
+            explicit: Some(explicit.clone()),
+            env_var: Some(name.to_string()),
+            ..CacheResolver::default()
+        };
+        let (root, source) = r.resolve().expect("resolve");
+        assert_eq!(source, CacheSource::Explicit);
+        assert_eq!(root.path(), explicit.as_path());
+    }
+
+    #[test]
+    fn resolver_env_var_second_and_skips_empty() {
+        let tmp = TempDir::new().expect("tempdir");
+        let _guard = CwdGuard::swap_to(tmp.path()).expect("set cwd");
+        let name = "CACHE_MANAGER_TEST_RESOLVER_ENV";
+        let _env_guard = EnvGuard::take(name);
+
+        // Empty counts as unset → NotFound (no workspace, no identity).
+        unsafe { env::set_var(name, "") };
+        let r = CacheResolver {
+            env_var: Some(name.to_string()),
+            ..CacheResolver::default()
+        };
+        let err = r.resolve().expect_err("empty env must fall through");
+        assert_eq!(err.kind(), io::ErrorKind::NotFound);
+        assert!(
+            format!("{err}").contains(name),
+            "error must name the env var: {err}"
+        );
+
+        // Non-empty wins.
+        let env_root = tmp.path().join("env-root");
+        unsafe { env::set_var(name, &env_root) };
+        let (root, source) = r.resolve().expect("resolve");
+        assert_eq!(source, CacheSource::EnvVar);
+        assert_eq!(root.path(), env_root.as_path());
+    }
+
+    #[test]
+    fn resolver_project_discovery_third() {
+        let tmp = TempDir::new().expect("tempdir");
+        let crate_root = tmp.path().join("workspace");
+        let nested = crate_root.join("src").join("nested");
+        fs::create_dir_all(&nested).expect("create nested");
+        fs::write(
+            crate_root.join(CARGO_TOML_FILE_NAME),
+            "[package]\nname='x'\nversion='0.1.0'\nedition='2024'\n",
+        )
+        .expect("write cargo");
+        let _guard = CwdGuard::swap_to(&nested).expect("set cwd");
+
+        let (root, source) = CacheResolver::default().resolve().expect("resolve");
+        assert_eq!(source, CacheSource::ProjectDiscovery);
+        let expected = crate_root
+            .canonicalize()
+            .expect("canonicalize")
+            .join(CACHE_DIR_NAME);
+        assert_eq!(root.path(), expected.as_path());
+    }
+
+    #[test]
+    fn resolver_no_workspace_without_identity_is_not_found_not_cwd() {
+        // Bare dir, no Cargo.toml anywhere above, no identity configured:
+        // the whole point of the resolver — NEVER silently <cwd>/.cache.
+        let tmp = TempDir::new().expect("tempdir");
+        let bare = tmp.path().join("bare");
+        fs::create_dir_all(&bare).expect("create bare");
+        let _guard = CwdGuard::swap_to(&bare).expect("set cwd");
+
+        let err = CacheResolver::default()
+            .resolve()
+            .expect_err("must not fall back to CWD");
+        assert_eq!(err.kind(), io::ErrorKind::NotFound);
+        assert!(
+            !bare.join(CACHE_DIR_NAME).exists(),
+            "resolver must not create anything on failure"
+        );
+    }
+
+    #[test]
+    fn resolver_cwd_fallback_is_explicit_opt_in() {
+        let tmp = TempDir::new().expect("tempdir");
+        let bare = tmp.path().join("bare");
+        fs::create_dir_all(&bare).expect("create bare");
+        let _guard = CwdGuard::swap_to(&bare).expect("set cwd");
+
+        let r = CacheResolver {
+            allow_cwd_fallback: true,
+            ..CacheResolver::default()
+        };
+        let (root, source) = r.resolve().expect("resolve");
+        assert_eq!(source, CacheSource::CwdFallback);
+        let expected = bare
+            .canonicalize()
+            .expect("canonicalize")
+            .join(CACHE_DIR_NAME);
+        assert_eq!(root.path(), expected.as_path());
+    }
+
+    #[test]
+    fn resolver_discovery_opt_out_skips_to_not_found() {
+        let tmp = TempDir::new().expect("tempdir");
+        let crate_root = tmp.path().join("workspace");
+        fs::create_dir_all(&crate_root).expect("create root");
+        fs::write(crate_root.join(CARGO_TOML_FILE_NAME), "[workspace]\n").expect("write cargo");
+        let _guard = CwdGuard::swap_to(&crate_root).expect("set cwd");
+
+        let r = CacheResolver {
+            allow_project_discovery: false,
+            ..CacheResolver::default()
+        };
+        let err = r.resolve().expect_err("discovery disabled → NotFound");
+        assert_eq!(err.kind(), io::ErrorKind::NotFound);
+        // Error must describe the actual path taken: discovery was skipped,
+        // not attempted-and-failed.
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("project discovery is disabled"),
+            "wrong error state: {msg}"
+        );
+        assert!(
+            !msg.contains("no Cargo workspace above"),
+            "false audit trail: {msg}"
+        );
+    }
+
+    #[cfg(feature = "os-cache-dir")]
+    #[test]
+    fn resolver_os_cache_dir_when_no_workspace() {
+        let tmp = TempDir::new().expect("tempdir");
+        let bare = tmp.path().join("bare");
+        fs::create_dir_all(&bare).expect("create bare");
+        let _guard = CwdGuard::swap_to(&bare).expect("set cwd");
+
+        let r = CacheResolver {
+            project_dirs: Some((
+                "com".to_string(),
+                "CacheManagerTests".to_string(),
+                "ResolverOsCache".to_string(),
+            )),
+            ..CacheResolver::default()
+        };
+        let (root, source) = r.resolve().expect("resolve");
+        assert_eq!(source, CacheSource::OsCacheDir);
+        let expected = ProjectDirs::from("com", "CacheManagerTests", "ResolverOsCache")
+            .expect("project dirs")
+            .cache_dir()
+            .to_path_buf();
+        assert_eq!(root.path(), expected.as_path());
+    }
+
+    #[cfg(feature = "os-cache-dir")]
+    #[test]
+    fn resolver_env_beats_os_cache_and_explicit_beats_env() {
+        let tmp = TempDir::new().expect("tempdir");
+        let bare = tmp.path().join("bare");
+        fs::create_dir_all(&bare).expect("create bare");
+        let _guard = CwdGuard::swap_to(&bare).expect("set cwd");
+        let name = "CACHE_MANAGER_TEST_RESOLVER_PRECEDENCE";
+        let _env_guard = EnvGuard::take(name);
+        let env_root = tmp.path().join("env-root");
+        unsafe { env::set_var(name, &env_root) };
+
+        let os_only = CacheResolver {
+            project_dirs: Some((
+                "com".to_string(),
+                "CacheManagerTests".to_string(),
+                "ResolverPrecedence".to_string(),
+            )),
+            ..CacheResolver::default()
+        };
+        // Env not consulted (no env_var configured) → OS cache.
+        let (_, source) = os_only.resolve().expect("resolve");
+        assert_eq!(source, CacheSource::OsCacheDir);
+
+        // Env configured → env wins over OS cache.
+        let with_env = CacheResolver {
+            env_var: Some(name.to_string()),
+            ..os_only.clone()
+        };
+        let (root, source) = with_env.resolve().expect("resolve");
+        assert_eq!(source, CacheSource::EnvVar);
+        assert_eq!(root.path(), env_root.as_path());
+
+        // Explicit wins over env.
+        let explicit = tmp.path().join("explicit-root");
+        let with_explicit = CacheResolver {
+            explicit: Some(explicit.clone()),
+            ..with_env
+        };
+        let (root, source) = with_explicit.resolve().expect("resolve");
+        assert_eq!(source, CacheSource::Explicit);
+        assert_eq!(root.path(), explicit.as_path());
     }
 
     #[cfg(feature = "os-cache-dir")]

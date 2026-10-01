@@ -153,6 +153,45 @@ not scan for arbitrary directory names — creating a directory named
 If you want to use a custom cache root, construct it explicitly with
 `CacheRoot::from_root(...)`.
 
+### Combined resolution: `CacheResolver` (no silent `<cwd>/.cache`)
+
+`from_discovery()` falls back to `<cwd>/.cache` when no workspace is found —
+convenient in dev, but an installed binary run from an arbitrary directory
+then scatters a fresh multi-GB `.cache` per shell CWD. `CacheResolver`
+replaces hand-rolled `match env::var(...)` chains with one fixed precedence
+and reports the winner so binaries can announce it:
+
+1. `explicit` — a CLI `--dir` path; wins over everything.
+2. `env_var` — a non-empty env var value.
+3. Cargo workspace discovery (`<workspace>/.cache`), unless
+   `allow_project_discovery` is false.
+4. OS user cache dir for `project_dirs` (`os-cache-dir` feature).
+
+No match returns `Err(NotFound)` naming the env var / identity that would fix
+it — never a silent CWD fallback. Opt into that legacy behavior per call site
+with `allow_cwd_fallback: true` (default `false`).
+
+```rust
+use cache_manager::{CacheResolver, CacheSource};
+
+// Installed shape: dev checkouts resolve under the repo, installed runs
+// under the OS user cache, explicit flags/env still win.
+let resolver = CacheResolver {
+    explicit: None,
+    env_var: Some("MYTOOL_CACHE_DIR".to_string()),
+    #[cfg(feature = "os-cache-dir")]
+    project_dirs: Some((
+        "com".to_string(),
+        "ExampleOrg".to_string(),
+        "ExampleApp".to_string(),
+    )),
+    ..CacheResolver::default()
+};
+```
+
+Recommended convention: announce the winner on stderr at startup
+(`cache: <path> (<source>)`) — cache placement must never be silent.
+
 ### OS-native user cache root (optional)
 
 Enable feature flag:
@@ -164,13 +203,27 @@ cargo add cache-manager --features os-cache-dir
 Then construct a `CacheRoot` from platform-native user cache directories:
 
 ```rust
-use cache_manager::CacheRoot;
+#[cfg(feature = "os-cache-dir")]
+fn run() -> std::io::Result<()> {
+    use cache_manager::CacheRoot;
 
-let root = CacheRoot::from_project_dirs("com", "ExampleOrg", "ExampleApp")
-	.expect("discover OS cache dir");
+    let root = CacheRoot::from_project_dirs("com", "ExampleOrg", "ExampleApp")
+        .expect("discover OS cache dir");
 
-let group = root.group("artifacts");
-group.ensure_dir().expect("ensure group");
+    let group = root.group("cache-manager-readme-example");
+    group.ensure_dir().expect("ensure group");
+    std::fs::remove_dir_all(group.path()).expect("cleanup example group");
+    Ok(())
+}
+
+#[cfg(not(feature = "os-cache-dir"))]
+fn run() -> std::io::Result<()> {
+    // `from_project_dirs` needs the `os-cache-dir` feature; the real path
+    // above runs under `cargo test --all-features`.
+    Ok(())
+}
+
+run().expect("example");
 ```
 
 `from_project_dirs` uses `directories::ProjectDirs` and typically resolves to:
@@ -188,26 +241,38 @@ group.ensure_dir().expect("ensure group");
 Example identity tuple:
 
 ```rust
-use cache_manager::CacheRoot;
-use directories::ProjectDirs;
-use std::fs;
+#[cfg(feature = "os-cache-dir")]
+fn run() -> std::io::Result<()> {
+    use cache_manager::CacheRoot;
+    use directories::ProjectDirs;
+    use std::fs;
 
-let root: CacheRoot = CacheRoot::from_project_dirs("com", "Acme", "WidgetTool")
-	.expect("discover OS cache dir");
-let got: std::path::PathBuf = root.path().to_path_buf();
+    let root: CacheRoot = CacheRoot::from_project_dirs("com", "Acme", "WidgetTool")
+        .expect("discover OS cache dir");
+    let got: std::path::PathBuf = root.path().to_path_buf();
 
-let expected: std::path::PathBuf = ProjectDirs::from("com", "Acme", "WidgetTool")
-	.expect("resolve project dirs")
-	.cache_dir()
-	.to_path_buf();
+    let expected: std::path::PathBuf = ProjectDirs::from("com", "Acme", "WidgetTool")
+        .expect("resolve project dirs")
+        .cache_dir()
+        .to_path_buf();
 
-assert_eq!(got, expected);
+    assert_eq!(got, expected);
 
-// If the example writes anything, keep it scoped and remove it explicitly.
-let example_group = root.group("cache-manager-readme-example");
-let probe = example_group.touch("probe.txt").expect("write probe");
-assert!(probe.exists());
-fs::remove_dir_all(example_group.path()).expect("cleanup example group");
+    // If the example writes anything, keep it scoped and remove it explicitly.
+    let example_group = root.group("cache-manager-readme-example");
+    let probe = example_group.touch("probe.txt").expect("write probe");
+    assert!(probe.exists());
+    fs::remove_dir_all(example_group.path()).expect("cleanup example group");
+    Ok(())
+}
+
+#[cfg(not(feature = "os-cache-dir"))]
+fn run() -> std::io::Result<()> {
+    // Same note as the example above: real path runs with the feature on.
+    Ok(())
+}
+
+run().expect("example");
 ```
 
 
