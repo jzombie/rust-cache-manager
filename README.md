@@ -324,8 +324,15 @@ Preview evictions without deleting files:
 ```rust
 use cache_manager::{CacheRoot, EvictPolicy, EvictionReport};
 
-let root: CacheRoot = CacheRoot::from_root("/tmp/project");
+// Self-contained: doctests share one process CWD with no isolation, so a
+// fixed path like `/tmp/project` would make this example order-dependent on
+// whichever example created the dir first. Use a tempdir instead.
+let dir = tempfile::tempdir().expect("tempdir");
+let root: CacheRoot = CacheRoot::from_root(dir.path());
 let group: cache_manager::CacheGroup = root.group("artifacts");
+group.ensure_dir().expect("ensure group");
+group.touch("old.bin").expect("seed file");
+
 let policy: EvictPolicy = EvictPolicy {
 	max_bytes: Some(10_000_000),
 	..Default::default()

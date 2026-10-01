@@ -253,7 +253,7 @@ pub enum CacheSource {
 /// 2. [`CacheResolver::env_var`] — a non-empty env var value.
 /// 3. Cargo workspace discovery (`<workspace>/.cache`), unless
 ///    [`CacheResolver::allow_project_discovery`] is false.
-/// 4. OS user cache dir for [`CacheResolver::project_dirs`] (requires the
+/// 4. OS user cache dir for the `project_dirs` identity (requires the
 ///    `os-cache-dir` feature; without it this arm is compiled out).
 ///
 /// When nothing matches, `resolve()` returns `Err` (kind `NotFound`) naming
