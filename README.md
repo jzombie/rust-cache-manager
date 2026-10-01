@@ -2,11 +2,12 @@
 
 [![made-with-rust][rust-logo]][rust-src-page] [![crates.io][crates-badge]][crates-page] [![MIT licensed][mit-license-badge]][mit-license-page] [![Apache 2.0 licensed][apache-2.0-license-badge]][apache-2.0-license-page] [![Coverage][coveralls-badge]][coveralls-page]
 
-Directory-based cache and artifact path management with discovered `.cache` roots, grouped cache paths, and optional eviction on directory initialization.
+`cache-manager` provides a single, consistent cache/artifact path layer for Rust Cargo workspaces, with OS-native per-user cache directories as a fallback for installed binaries running outside any workspace.
 
-> This crate was built to solve a recurring workspace problem we had before adopting it.  
-> Previously, several crates wrote artifacts to different locations with inconsistent eviction policy management.  
-> `cache-manager` provides a single, consistent cache/artifact path layer across the workspace _(and also works outside of `cargo` environments)_.  
+Directory-based cache and artifact path management with discovered `.cache` roots, grouped cache paths, and optional eviction on directory initialization.  
+
+Tested on macOS, Linux, and Windows.  
+
 
 ## Quick start
 
@@ -73,8 +74,6 @@ println!("{}", entry.display());
 
 - **Open-source + commercial-friendly:** dual-licensed under [MIT][mit-license-page] or [Apache-2.0][apache-2.0-license-page].
 
-> Tested on macOS, Linux, and Windows.
-
 ## Reference
 
 ### Mental model: root -> groups -> entries
@@ -136,11 +135,13 @@ assert!(cache_path.ends_with(Path::new(".cache").join("tool").join("data.bin")))
 // The call only computes the path; it does not create files or directories
 assert!(!cache_path.exists());
 
-// Absolute paths are returned unchanged:
-let absolute = Path::new("/tmp/custom/cache.json");
+// Absolute paths are returned unchanged. NOTE: `Path::new("/tmp/...")` is
+// NOT absolute on Windows (drive-relative), so build the probe from the
+// system temp dir, which is absolute on every platform.
+let absolute = std::env::temp_dir().join("cache.json");
 let kept = CacheRoot::from_discovery()
 	.expect("discover cache root")
-	.cache_path("tool", absolute);
+	.cache_path("tool", absolute.clone());
 assert_eq!(kept, absolute);
 ```
 
@@ -289,7 +290,8 @@ Apply policy directly to a `CacheGroup`:
 ```rust
 use cache_manager::{CacheRoot, EvictPolicy};
 
-let root: CacheRoot = CacheRoot::from_root("/tmp/project");
+let dir = tempfile::tempdir().expect("tempdir");
+let root: CacheRoot = CacheRoot::from_root(dir.path());
 let group: cache_manager::CacheGroup = root.group("artifacts");
 
 let policy: EvictPolicy = EvictPolicy {
@@ -308,7 +310,8 @@ Apply policy through `CacheRoot` convenience API:
 use cache_manager::{CacheRoot, EvictPolicy};
 use std::time::Duration;
 
-let root: CacheRoot = CacheRoot::from_root("/tmp/project");
+let dir = tempfile::tempdir().expect("tempdir");
+let root: CacheRoot = CacheRoot::from_root(dir.path());
 let policy: EvictPolicy = EvictPolicy {
 	max_age: Some(Duration::from_secs(60 * 60 * 24 * 30)), // 30 days
 	..Default::default()
@@ -424,8 +427,12 @@ fn main() {
 	use cache_manager::{CacheGroup, CacheRoot, ProcessScopedCacheGroup};
 	use std::path::Path;
 
-	// 1) Build the root and the base group where process directories will live
-	let root: CacheRoot = CacheRoot::from_root("/tmp/project");
+	// 1) Build the root and the base group where process directories will live.
+	// Self-contained tempdir (not a fixed `/tmp/...` path): doctests share one
+	// process CWD with no isolation, and fixed paths are drive-relative — i.e.
+	// not absolute — on Windows.
+	let dir = tempfile::tempdir().expect("tempdir");
+	let root: CacheRoot = CacheRoot::from_root(dir.path());
 	let base_group: CacheGroup = root.group("artifacts/session");
 
 	// 2) Create a process-scoped directory (name starts with `pid-<pid>-...`)
@@ -436,8 +443,14 @@ fn main() {
 	let thread_group: CacheGroup = scoped.ensure_thread_group().expect("ensure thread group");
 	let entry: std::path::PathBuf = thread_group.touch("v1/index.bin").expect("touch thread entry");
 
-	// 4) Verify the static pieces of the structure
-	assert!(entry.starts_with(base_group.path()));
+	// 4) Verify the static pieces of the structure. Canonicalize both sides:
+	// tempfile may return verbatim (`\\?\`) / symlink-resolved paths that
+	// string-compare unequal to the uncanonicalized base on Windows/macOS.
+	let base_canon: std::path::PathBuf =
+		base_group.path().canonicalize().expect("canonicalize base");
+	let entry_canon: std::path::PathBuf =
+		entry.canonicalize().expect("canonicalize entry");
+	assert!(entry_canon.starts_with(&base_canon));
 	assert!(entry.ends_with(Path::new("v1/index.bin")));
 
 	// 5) Verify the dynamic thread segment (`thread-<n>`)
@@ -481,7 +494,8 @@ that existing group.
 fn from_group_example() {
 	use cache_manager::{CacheGroup, CacheRoot, ProcessScopedCacheGroup};
 
-	let root: CacheRoot = CacheRoot::from_root("/tmp/project");
+	let dir = tempfile::tempdir().expect("tempdir");
+	let root: CacheRoot = CacheRoot::from_root(dir.path());
 	let base_group: CacheGroup = root.group("artifacts/session");
 
 	let scoped: ProcessScopedCacheGroup =
