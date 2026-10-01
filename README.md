@@ -545,9 +545,7 @@ println!("entry path: {}", entry_path.display());
 
 ## License
 
-`cache-manager` is primarily distributed under the terms of both the MIT license and the Apache License (Version 2.0).
-
-See [LICENSE-APACHE][apache-2.0-license-page] and [LICENSE-MIT][mit-license-page] for details.
+`cache-manager` is primarily distributed under the terms of both the [MIT license][mit-license-page] and the [Apache License (Version 2.0)][apache-2.0-license-page] .
 
 [rust-src-page]: https://www.rust-lang.org/
 [rust-logo]: https://img.shields.io/badge/Made%20with-Rust-black
