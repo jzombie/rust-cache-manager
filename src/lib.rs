@@ -351,7 +351,7 @@ impl CacheResolver {
         Err(io::Error::new(
             io::ErrorKind::NotFound,
             format!(
-                "no cache location: {}{}; {}",
+                "no cache location: {}{}; no OS cache identity is configured",
                 if self.allow_project_discovery {
                     "no Cargo workspace above the working directory"
                 } else {
@@ -361,22 +361,8 @@ impl CacheResolver {
                     Some(n) => format!(" and ${n} is unset"),
                     None => " and no env-var override is configured".to_string(),
                 },
-                match self.os_identity_hint() {
-                    Some(h) => format!("no OS cache identity matched ({h})"),
-                    None => "no OS cache identity is configured".to_string(),
-                }
             ),
         ))
-    }
-
-    /// Human hint naming the configured OS identity (or `None`).
-    fn os_identity_hint(&self) -> Option<String> {
-        #[cfg(feature = "os-cache-dir")]
-        if let Some((q, o, a)) = &self.project_dirs {
-            return Some(format!("{q}.{o}.{a}"));
-        }
-        let _ = &self.env_var;
-        None
     }
 }
 
@@ -983,6 +969,10 @@ mod tests {
 
     impl Drop for EnvGuard {
         fn drop(&mut self) {
+            // SAFETY: process-global env mutation is sound here because every
+            // test that touches env holds the shared `cwd_lock()`, so no two
+            // tests can race, and this exact var is restored to its prior
+            // value (no other thread observes these test-scoped names).
             unsafe {
                 match &self.prior {
                     Some(v) => env::set_var(&self.name, v),
@@ -998,6 +988,7 @@ mod tests {
         let _guard = CwdGuard::swap_to(tmp.path()).expect("set cwd");
         let name = "CACHE_MANAGER_TEST_RESOLVER_EXPLICIT";
         let _env_guard = EnvGuard::take(name);
+        // SAFETY: serialized by CwdGuard's global lock; test-scoped name.
         unsafe { env::set_var(name, tmp.path().join("env-root")) };
         // Also plant a workspace: explicit must still win over discovery.
         fs::write(tmp.path().join("Cargo.toml"), "[workspace]\n").expect("write cargo");
@@ -1018,27 +1009,39 @@ mod tests {
         let tmp = TempDir::new().expect("tempdir");
         let _guard = CwdGuard::swap_to(tmp.path()).expect("set cwd");
         let name = "CACHE_MANAGER_TEST_RESOLVER_ENV";
-        let _env_guard = EnvGuard::take(name);
+        // Pre-seed a sentinel: proves EnvGuard restores a prior value
+        // (not just the unset case) when it drops.
+        // SAFETY: serialized by CwdGuard's global lock; test-scoped name.
+        unsafe { env::set_var(name, "sentinel") };
+        {
+            let _env_guard = EnvGuard::take(name);
 
-        // Empty counts as unset → NotFound (no workspace, no identity).
-        unsafe { env::set_var(name, "") };
-        let r = CacheResolver {
-            env_var: Some(name.to_string()),
-            ..CacheResolver::default()
-        };
-        let err = r.resolve().expect_err("empty env must fall through");
-        assert_eq!(err.kind(), io::ErrorKind::NotFound);
-        assert!(
-            format!("{err}").contains(name),
-            "error must name the env var: {err}"
-        );
+            // Empty counts as unset → NotFound (no workspace, no identity).
+            // SAFETY: same serialization; guard restores on unwind.
+            unsafe { env::set_var(name, "") };
+            let r = CacheResolver {
+                env_var: Some(name.to_string()),
+                ..CacheResolver::default()
+            };
+            let err = r.resolve().expect_err("empty env must fall through");
+            assert_eq!(err.kind(), io::ErrorKind::NotFound);
+            assert!(
+                format!("{err}").contains(name),
+                "error must name the env var: {err}"
+            );
 
-        // Non-empty wins.
-        let env_root = tmp.path().join("env-root");
-        unsafe { env::set_var(name, &env_root) };
-        let (root, source) = r.resolve().expect("resolve");
-        assert_eq!(source, CacheSource::EnvVar);
-        assert_eq!(root.path(), env_root.as_path());
+            // Non-empty wins.
+            let env_root = tmp.path().join("env-root");
+            // SAFETY: same serialization; guard restores on unwind.
+            unsafe { env::set_var(name, &env_root) };
+            let (root, source) = r.resolve().expect("resolve");
+            assert_eq!(source, CacheSource::EnvVar);
+            assert_eq!(root.path(), env_root.as_path());
+        }
+        // Guard dropped here: prior sentinel value must be back.
+        assert_eq!(env::var(name).as_deref(), Ok("sentinel"));
+        // SAFETY: test cleanup of a test-scoped name; suite holds the lock.
+        unsafe { env::remove_var(name) };
     }
 
     #[test]
@@ -1164,6 +1167,7 @@ mod tests {
         let name = "CACHE_MANAGER_TEST_RESOLVER_PRECEDENCE";
         let _env_guard = EnvGuard::take(name);
         let env_root = tmp.path().join("env-root");
+        // SAFETY: serialized by CwdGuard's global lock; test-scoped name.
         unsafe { env::set_var(name, &env_root) };
 
         let os_only = CacheResolver {
