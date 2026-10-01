@@ -2,11 +2,12 @@
 
 [![made-with-rust][rust-logo]][rust-src-page] [![crates.io][crates-badge]][crates-page] [![MIT licensed][mit-license-badge]][mit-license-page] [![Apache 2.0 licensed][apache-2.0-license-badge]][apache-2.0-license-page] [![Coverage][coveralls-badge]][coveralls-page]
 
-Directory-based cache and artifact path management with discovered `.cache` roots, grouped cache paths, and optional eviction on directory initialization.
+`cache-manager` provides a single, consistent cache/artifact path layer for Rust Cargo workspaces, with OS-native per-user cache directories as a fallback for installed binaries running outside any workspace.
 
-> This crate was built to solve a recurring workspace problem we had before adopting it.  
-> Previously, several crates wrote artifacts to different locations with inconsistent eviction policy management.  
-> `cache-manager` provides a single, consistent cache/artifact path layer across the workspace _(and also works outside of `cargo` environments)_.  
+Directory-based cache and artifact path management with discovered `.cache` roots, grouped cache paths, and optional eviction on directory initialization.  
+
+Tested on macOS, Linux, and Windows.  
+
 
 ## Quick start
 
@@ -73,8 +74,6 @@ println!("{}", entry.display());
 
 - **Open-source + commercial-friendly:** dual-licensed under [MIT][mit-license-page] or [Apache-2.0][apache-2.0-license-page].
 
-> Tested on macOS, Linux, and Windows.
-
 ## Reference
 
 ### Mental model: root -> groups -> entries
@@ -136,11 +135,13 @@ assert!(cache_path.ends_with(Path::new(".cache").join("tool").join("data.bin")))
 // The call only computes the path; it does not create files or directories
 assert!(!cache_path.exists());
 
-// Absolute paths are returned unchanged:
-let absolute = Path::new("/tmp/custom/cache.json");
+// Absolute paths are returned unchanged. NOTE: `Path::new("/tmp/...")` is
+// NOT absolute on Windows (drive-relative), so build the probe from the
+// system temp dir, which is absolute on every platform.
+let absolute = std::env::temp_dir().join("cache.json");
 let kept = CacheRoot::from_discovery()
 	.expect("discover cache root")
-	.cache_path("tool", absolute);
+	.cache_path("tool", absolute.clone());
 assert_eq!(kept, absolute);
 ```
 
@@ -153,6 +154,45 @@ not scan for arbitrary directory names — creating a directory named
 If you want to use a custom cache root, construct it explicitly with
 `CacheRoot::from_root(...)`.
 
+### Combined resolution: `CacheResolver` (no silent `<cwd>/.cache`)
+
+`from_discovery()` falls back to `<cwd>/.cache` when no workspace is found —
+convenient in dev, but an installed binary run from an arbitrary directory
+then scatters a fresh multi-GB `.cache` per shell CWD. `CacheResolver`
+replaces hand-rolled `match env::var(...)` chains with one fixed precedence
+and reports the winner so binaries can announce it:
+
+1. `explicit` — a CLI `--dir` path; wins over everything.
+2. `env_var` — a non-empty env var value.
+3. Cargo workspace discovery (`<workspace>/.cache`), unless
+   `allow_project_discovery` is false.
+4. OS user cache dir for `project_dirs` (`os-cache-dir` feature).
+
+No match returns `Err(NotFound)` naming the env var / identity that would fix
+it — never a silent CWD fallback. Opt into that legacy behavior per call site
+with `allow_cwd_fallback: true` (default `false`).
+
+```rust
+use cache_manager::{CacheResolver, CacheSource};
+
+// Installed shape: dev checkouts resolve under the repo, installed runs
+// under the OS user cache, explicit flags/env still win.
+let resolver = CacheResolver {
+    explicit: None,
+    env_var: Some("MYTOOL_CACHE_DIR".to_string()),
+    #[cfg(feature = "os-cache-dir")]
+    project_dirs: Some((
+        "com".to_string(),
+        "ExampleOrg".to_string(),
+        "ExampleApp".to_string(),
+    )),
+    ..CacheResolver::default()
+};
+```
+
+Recommended convention: announce the winner on stderr at startup
+(`cache: <path> (<source>)`) — cache placement must never be silent.
+
 ### OS-native user cache root (optional)
 
 Enable feature flag:
@@ -164,13 +204,27 @@ cargo add cache-manager --features os-cache-dir
 Then construct a `CacheRoot` from platform-native user cache directories:
 
 ```rust
-use cache_manager::CacheRoot;
+#[cfg(feature = "os-cache-dir")]
+fn run() -> std::io::Result<()> {
+    use cache_manager::CacheRoot;
 
-let root = CacheRoot::from_project_dirs("com", "ExampleOrg", "ExampleApp")
-	.expect("discover OS cache dir");
+    let root = CacheRoot::from_project_dirs("com", "ExampleOrg", "ExampleApp")
+        .expect("discover OS cache dir");
 
-let group = root.group("artifacts");
-group.ensure_dir().expect("ensure group");
+    let group = root.group("cache-manager-readme-example");
+    group.ensure_dir().expect("ensure group");
+    std::fs::remove_dir_all(group.path()).expect("cleanup example group");
+    Ok(())
+}
+
+#[cfg(not(feature = "os-cache-dir"))]
+fn run() -> std::io::Result<()> {
+    // `from_project_dirs` needs the `os-cache-dir` feature; the real path
+    // above runs under `cargo test --all-features`.
+    Ok(())
+}
+
+run().expect("example");
 ```
 
 `from_project_dirs` uses `directories::ProjectDirs` and typically resolves to:
@@ -188,26 +242,38 @@ group.ensure_dir().expect("ensure group");
 Example identity tuple:
 
 ```rust
-use cache_manager::CacheRoot;
-use directories::ProjectDirs;
-use std::fs;
+#[cfg(feature = "os-cache-dir")]
+fn run() -> std::io::Result<()> {
+    use cache_manager::CacheRoot;
+    use directories::ProjectDirs;
+    use std::fs;
 
-let root: CacheRoot = CacheRoot::from_project_dirs("com", "Acme", "WidgetTool")
-	.expect("discover OS cache dir");
-let got: std::path::PathBuf = root.path().to_path_buf();
+    let root: CacheRoot = CacheRoot::from_project_dirs("com", "Acme", "WidgetTool")
+        .expect("discover OS cache dir");
+    let got: std::path::PathBuf = root.path().to_path_buf();
 
-let expected: std::path::PathBuf = ProjectDirs::from("com", "Acme", "WidgetTool")
-	.expect("resolve project dirs")
-	.cache_dir()
-	.to_path_buf();
+    let expected: std::path::PathBuf = ProjectDirs::from("com", "Acme", "WidgetTool")
+        .expect("resolve project dirs")
+        .cache_dir()
+        .to_path_buf();
 
-assert_eq!(got, expected);
+    assert_eq!(got, expected);
 
-// If the example writes anything, keep it scoped and remove it explicitly.
-let example_group = root.group("cache-manager-readme-example");
-let probe = example_group.touch("probe.txt").expect("write probe");
-assert!(probe.exists());
-fs::remove_dir_all(example_group.path()).expect("cleanup example group");
+    // If the example writes anything, keep it scoped and remove it explicitly.
+    let example_group = root.group("cache-manager-readme-example");
+    let probe = example_group.touch("probe.txt").expect("write probe");
+    assert!(probe.exists());
+    fs::remove_dir_all(example_group.path()).expect("cleanup example group");
+    Ok(())
+}
+
+#[cfg(not(feature = "os-cache-dir"))]
+fn run() -> std::io::Result<()> {
+    // Same note as the example above: real path runs with the feature on.
+    Ok(())
+}
+
+run().expect("example");
 ```
 
 
@@ -224,7 +290,8 @@ Apply policy directly to a `CacheGroup`:
 ```rust
 use cache_manager::{CacheRoot, EvictPolicy};
 
-let root: CacheRoot = CacheRoot::from_root("/tmp/project");
+let dir = tempfile::tempdir().expect("tempdir");
+let root: CacheRoot = CacheRoot::from_root(dir.path());
 let group: cache_manager::CacheGroup = root.group("artifacts");
 
 let policy: EvictPolicy = EvictPolicy {
@@ -243,7 +310,8 @@ Apply policy through `CacheRoot` convenience API:
 use cache_manager::{CacheRoot, EvictPolicy};
 use std::time::Duration;
 
-let root: CacheRoot = CacheRoot::from_root("/tmp/project");
+let dir = tempfile::tempdir().expect("tempdir");
+let root: CacheRoot = CacheRoot::from_root(dir.path());
 let policy: EvictPolicy = EvictPolicy {
 	max_age: Some(Duration::from_secs(60 * 60 * 24 * 30)), // 30 days
 	..Default::default()
@@ -259,8 +327,15 @@ Preview evictions without deleting files:
 ```rust
 use cache_manager::{CacheRoot, EvictPolicy, EvictionReport};
 
-let root: CacheRoot = CacheRoot::from_root("/tmp/project");
+// Self-contained: doctests share one process CWD with no isolation, so a
+// fixed path like `/tmp/project` would make this example order-dependent on
+// whichever example created the dir first. Use a tempdir instead.
+let dir = tempfile::tempdir().expect("tempdir");
+let root: CacheRoot = CacheRoot::from_root(dir.path());
 let group: cache_manager::CacheGroup = root.group("artifacts");
+group.ensure_dir().expect("ensure group");
+group.touch("old.bin").expect("seed file");
+
 let policy: EvictPolicy = EvictPolicy {
 	max_bytes: Some(10_000_000),
 	..Default::default()
@@ -352,8 +427,12 @@ fn main() {
 	use cache_manager::{CacheGroup, CacheRoot, ProcessScopedCacheGroup};
 	use std::path::Path;
 
-	// 1) Build the root and the base group where process directories will live
-	let root: CacheRoot = CacheRoot::from_root("/tmp/project");
+	// 1) Build the root and the base group where process directories will live.
+	// Self-contained tempdir (not a fixed `/tmp/...` path): doctests share one
+	// process CWD with no isolation, and fixed paths are drive-relative — i.e.
+	// not absolute — on Windows.
+	let dir = tempfile::tempdir().expect("tempdir");
+	let root: CacheRoot = CacheRoot::from_root(dir.path());
 	let base_group: CacheGroup = root.group("artifacts/session");
 
 	// 2) Create a process-scoped directory (name starts with `pid-<pid>-...`)
@@ -364,8 +443,14 @@ fn main() {
 	let thread_group: CacheGroup = scoped.ensure_thread_group().expect("ensure thread group");
 	let entry: std::path::PathBuf = thread_group.touch("v1/index.bin").expect("touch thread entry");
 
-	// 4) Verify the static pieces of the structure
-	assert!(entry.starts_with(base_group.path()));
+	// 4) Verify the static pieces of the structure. Canonicalize both sides:
+	// tempfile may return verbatim (`\\?\`) / symlink-resolved paths that
+	// string-compare unequal to the uncanonicalized base on Windows/macOS.
+	let base_canon: std::path::PathBuf =
+		base_group.path().canonicalize().expect("canonicalize base");
+	let entry_canon: std::path::PathBuf =
+		entry.canonicalize().expect("canonicalize entry");
+	assert!(entry_canon.starts_with(&base_canon));
 	assert!(entry.ends_with(Path::new("v1/index.bin")));
 
 	// 5) Verify the dynamic thread segment (`thread-<n>`)
@@ -409,7 +494,8 @@ that existing group.
 fn from_group_example() {
 	use cache_manager::{CacheGroup, CacheRoot, ProcessScopedCacheGroup};
 
-	let root: CacheRoot = CacheRoot::from_root("/tmp/project");
+	let dir = tempfile::tempdir().expect("tempdir");
+	let root: CacheRoot = CacheRoot::from_root(dir.path());
 	let base_group: CacheGroup = root.group("artifacts/session");
 
 	let scoped: ProcessScopedCacheGroup =
