@@ -71,7 +71,9 @@ jobs:
             ${{ runner.os }}-cargo-${{ steps.rustc.outputs.hash }}-${{ steps.lockfile.outputs.hash }}-
 
       - name: Test
-        run: cargo test --workspace --all-features --lib --bins --tests --examples --doc -- --include-ignored
+        # No target selectors: runs lib, bins, tests, examples AND doctests.
+        # (`--doc` cannot be mixed with `--lib/--bins/--tests/--examples`.)
+        run: cargo test --workspace --all-features -- --include-ignored
 
       - name: Test doctests with default features
         # Feature-gated README examples must also compile with default
