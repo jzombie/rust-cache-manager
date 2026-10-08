@@ -737,13 +737,15 @@ fn ensure_writable_recursive(dir: &Path, report: &mut WritableReport) -> io::Res
     entries.sort_by_key(|e| e.file_name());
     for entry in entries {
         let path = entry.path();
-        // `symlink_metadata`: never follow links. Anything that is not a
-        // real directory is fixed in place (files) or skipped (symlinks
-        // and other special nodes keep their modes).
+        // `symlink_metadata`: never follow links. Files are fixed in place;
+        // symlinks route through `fix_one` (no-op guard) so the guard
+        // stays covered; other special nodes keep their modes.
         let meta = fs::symlink_metadata(&path).map_err(|e| path_error(&path, e))?;
         if meta.is_dir() {
             ensure_writable_recursive(&path, report)?;
-        } else if meta.is_file() {
+        } else if meta.is_file() || meta.file_type().is_symlink() {
+            // Route symlinks through `fix_one` so its no-op guard stays
+            // covered: link itself and target keep their modes.
             fix_one(&path, report).map_err(|e| path_error(&path, e))?;
         }
     }
