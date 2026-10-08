@@ -184,6 +184,37 @@ fn symlinked_root_fails_closed() {
     assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
 }
 
+#[cfg(unix)]
+#[test]
+fn special_nodes_are_skipped_without_error() {
+    // A fifo is neither dir, file, nor symlink: the walk must skip it
+    // (keep its mode) instead of failing or counting it.
+    use std::process::Command;
+
+    let tmp = TempDir::new().unwrap();
+    let fifo = tmp.path().join("pipe");
+    let status = Command::new("mkfifo")
+        .arg(&fifo)
+        .status()
+        .expect("mkfifo present on unix");
+    assert!(status.success(), "mkfifo must succeed");
+
+    let file = tmp.path().join("regular");
+    fs::write(&file, b"x").unwrap();
+    set_readonly(&file, true);
+
+    let report = ensure_writable_tree(tmp.path()).unwrap();
+
+    assert_writable(&file);
+    assert_eq!(report.files_fixed, 1);
+    assert_eq!(report.dirs_fixed, 0);
+    // Still a fifo, not a file/dir/symlink target.
+    let meta = fs::symlink_metadata(&fifo).unwrap();
+    assert!(!meta.is_file());
+    assert!(!meta.is_dir());
+    assert!(!meta.file_type().is_symlink());
+}
+
 #[test]
 fn single_file_root_is_fixed_in_place() {
     let tmp = TempDir::new().unwrap();
