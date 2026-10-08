@@ -14,16 +14,14 @@ concurrency:
 
 jobs:
   test_matrix:
-    name: test (OS=${{ matrix.os }}, Features=${{ matrix.name }})
+    name: test (OS=${{ matrix.os }}, Flags=${{ matrix.flags }})
     runs-on: ${{ matrix.os }}
 
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
-        include:
-          - name: "All Features"
-            flags: "--all-features"
+        flags: ["--all-features", "--no-default-features"]
 
     steps:
       - name: Checkout repository
@@ -73,13 +71,8 @@ jobs:
       - name: Test
         # No target selectors: runs lib, bins, tests, examples AND doctests.
         # (`--doc` cannot be mixed with `--lib/--bins/--tests/--examples`.)
-        run: cargo test --workspace --all-features -- --include-ignored
+        run: cargo test --workspace ${{ matrix.flags }} -- --include-ignored
 
-      - name: Test doctests with default features
-        # Feature-gated README examples must also compile with default
-        # features (os-cache-dir off) — the all-features run above cannot
-        # catch that class of breakage.
-        run: cargo test --workspace --doc
 
   test:
     name: test
