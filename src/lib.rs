@@ -784,6 +784,11 @@ fn fix_one(path: &Path, report: &mut WritableReport) -> io::Result<()> {
     {
         let mut permissions = meta.permissions();
         if permissions.readonly() {
+            // `set_readonly(false)` is correct here: this block only compiles
+            // on non-Unix targets (Windows), where it clears the readonly
+            // attribute. The `permissions_set_readonly_false` lint warns
+            // about Unix semantics (world-writable), which do not apply.
+            #[allow(clippy::permissions_set_readonly_false)]
             permissions.set_readonly(false);
             fs::set_permissions(path, permissions)?;
             if meta.is_dir() {
