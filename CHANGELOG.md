@@ -8,22 +8,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/) and this 
 
 ### Added
 
-- `ensure_writable_tree` + `WritableReport`: normalize-on-ingest permission
-  pass over an extracted cache tree. Sets owner-write on Unix (owner rwx for
-  directories so traversal never EACCES, owner-write only for files —
-  group/other bits untouched) and clears the readonly flag elsewhere.
-  Symlinks are never followed or modified, traversal stays under the root
-  (symlinked roots fail closed), order is deterministic, errors abort naming
-  the path. Fixes the observed failure where `0444` release-tarball members
-  broke post-extract steps (macOS `xattr -dr` quarantine strips, Windows
-  tree deletion on rotation). Covered by `tests/normalize_permissions.rs`:
-  readonly fixtures, counts, idempotency, mode preservation, symlink
-  non-mutation, file roots, search-less directories, and a macOS-only
-  incident reproduction (0444 file rejects the strip before, accepts after).
-- `CacheGroup::ensure_dir` / `ensure_dir_with_policy` now normalize on the
-  way in: group dirs are always left owner-writable. Callers extracting
-  archives re-ensure afterwards — `tar` writes explicit mode bits per member
-  during unpack, re-applying read-only modes creation just cleared.
+- `ensure_writable_tree` + `WritableReport`: call once after extracting an
+  archive into its final cache location. Makes the tree owner-writable so
+  post-extract steps don't fail on read-only tarball members (e.g. `0444`
+  files breaking macOS `xattr -dr` strips, Windows deletion on rotation).
+  Unix: adds owner-write only (owner rwx for directories so traversal never
+  EACCES, owner-write for files; group/other bits untouched). Non-Unix:
+  clears the readonly flag. Never follows or modifies symlinks; symlinked
+  roots fail closed; deterministic order; first I/O error aborts naming
+  the path. Returns counts of fixed files/dirs; second run reports zeros.
+- `CacheGroup::ensure_dir` / `ensure_dir_with_policy` now leave group dirs
+  owner-writable. Since `tar` re-applies per-member modes during unpack,
+  call `ensure_writable_tree` again after unpacking into the group dir.
 
 ## [0.5.0] - 2026-10-01
 
