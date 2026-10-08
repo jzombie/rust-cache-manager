@@ -385,6 +385,31 @@ For `max_files` and `max_bytes`, files are evicted oldest-first by modified time
 - Directories are not counted as bytes.
 - Enforcement happens only during policy-aware `ensure_*_with_policy` calls (not continuously in the background).
 
+### Normalize permissions after extracting archives
+
+`ensure_dir()` only fixes what exists at call time. Unix has no "recursive
+future permissions": `tar` re-applies archived modes on unpack, so a writable
+group dir still ends up with `0444` members. Call `ensure_writable_tree()`
+again after unpack, before post-extract steps (`xattr`, rotation, deletion):
+
+```rust
+use cache_manager::{CacheRoot, ensure_writable_tree};
+
+let dir = tempfile::tempdir().expect("tempdir");
+let root: CacheRoot = CacheRoot::from_root(dir.path());
+let group = root.group("artifacts");
+group.ensure_dir().expect("ensure group");
+
+// ... unpack tarball into group.path() ...
+// tar::Archive::new(...).unpack(group.path()).expect("unpack");
+
+ensure_writable_tree(group.path()).expect("normalize permissions");
+// now safe: xattr strips, file writes, rotation deletes
+```
+
+Unix adds owner-write only (owner rwx for dirs, owner-write for files).
+Non-Unix clears the readonly flag. Symlinks are never followed or modified.
+
 ### Optional process/thread scoped caches
 
 Enable feature flag:

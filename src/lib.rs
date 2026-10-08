@@ -390,6 +390,9 @@ impl CacheGroup {
     }
 
     /// Ensure the group directory exists on disk, creating parents as needed.
+    /// Normalizes permissions on the way in (see [`ensure_writable_tree`]):
+    /// the cache owns its directories, so a group dir is always left
+    /// owner-writable.
     pub fn ensure_dir(&self) -> io::Result<&Path> {
         self.ensure_dir_with_policy(None)
     }
@@ -401,6 +404,9 @@ impl CacheGroup {
     /// ignored so initialization can continue.
     pub fn ensure_dir_with_policy(&self, policy: Option<&EvictPolicy>) -> io::Result<&Path> {
         fs::create_dir_all(&self.path)?;
+        // Normalize before anything else touches the tree (and before
+        // eviction deletes from it): read-only leftovers break both.
+        ensure_writable_tree(&self.path)?;
         if let Some(policy) = policy {
             apply_evict_policy(&self.path, policy)?;
         }
@@ -658,6 +664,150 @@ fn collect_files_recursive(dir: &Path, out: &mut Vec<FileEntry>) -> io::Result<(
         }
     }
     Ok(())
+}
+
+/// Counts of cache entries made owner-writable by [`ensure_writable_tree`].
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct WritableReport {
+    /// Regular files that gained owner-write (Unix) or lost the readonly
+    /// flag (Windows).
+    pub files_fixed: u64,
+    /// Directories that gained owner-write (Unix) or lost the readonly
+    /// flag (Windows).
+    pub dirs_fixed: u64,
+}
+
+/// Ensure every entry under `root` (inclusive) is owner-writable, so later
+/// cache operations (attribute changes, rotation, deletion) never fail on
+/// read-only modes inherited from release archives.
+///
+/// Call it once, right after extracting an archive into its final cache
+/// location. It fixes the observed failure where `0444` files from release
+/// tarballs made post-extract steps (e.g. macOS `xattr -dr` quarantine
+/// strips, Windows tree deletion on rotation) fail with permission errors.
+/// There is deliberately no staging concept in this crate: validity of a
+/// cached tree is the presence of the caller's sentinel file, so a killed
+/// fetch leaves a sentinel-less tree the next run simply refetches.
+///
+/// Semantics, by platform:
+/// - Unix: sets the owner-write bit (`0o200`), preserving every other
+///   mode bit. Never broadens group/other access.
+/// - Windows (and other non-Unix): clears the readonly flag. This is the
+///   portable `set_readonly(false)` behavior.
+///
+/// Security contract:
+/// - Symlinks are never followed and never modified (a malicious archive
+///   cannot redirect the walk outside `root`, and link targets keep their
+///   modes).
+/// - Traversal stays under `root`: recursion only descends into
+///   directories reached via `read_dir` from `root`.
+/// - Deterministic order (sorted entries), so repeated runs behave
+///   identically.
+/// - Fail-closed: the first I/O error aborts with the offending path in
+///   the message.
+///
+/// Returns counts of fixed entries; a second run over the same tree
+/// reports zeros.
+pub fn ensure_writable_tree(root: &Path) -> io::Result<WritableReport> {
+    // Probe once, up front: a symlinked root would send the walk outside
+    // the tree it claims to normalize (fail closed), and a file root has
+    // no children to descend into (fix in place, no read_dir).
+    let meta = fs::symlink_metadata(root).map_err(|e| path_error(root, e))?;
+    if meta.file_type().is_symlink() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("cache permissions ({}): root is a symlink", root.display()),
+        ));
+    }
+    let mut report = WritableReport::default();
+    if meta.is_file() {
+        fix_one(root, &mut report).map_err(|e| path_error(root, e))?;
+        return Ok(report);
+    }
+    ensure_writable_recursive(root, &mut report)?;
+    Ok(report)
+}
+
+fn ensure_writable_recursive(dir: &Path, report: &mut WritableReport) -> io::Result<()> {
+    fix_one(dir, report).map_err(|e| path_error(dir, e))?;
+    let mut entries: Vec<_> = fs::read_dir(dir)
+        .map_err(|e| path_error(dir, e))?
+        .collect::<Result<_, _>>()
+        .map_err(|e| path_error(dir, e))?;
+    entries.sort_by_key(|e| e.file_name());
+    for entry in entries {
+        let path = entry.path();
+        // `symlink_metadata`: never follow links. Files are fixed in place;
+        // symlinks route through `fix_one` (no-op guard) so the guard
+        // stays covered; other special nodes keep their modes.
+        let meta = fs::symlink_metadata(&path).map_err(|e| path_error(&path, e))?;
+        if meta.is_dir() {
+            ensure_writable_recursive(&path, report)?;
+        } else if meta.is_file() || meta.file_type().is_symlink() {
+            // Route symlinks through `fix_one` so its no-op guard stays
+            // covered: link itself and target keep their modes.
+            fix_one(&path, report).map_err(|e| path_error(&path, e))?;
+        }
+    }
+    Ok(())
+}
+
+/// Clear the read-only state of one real file or directory, counting the
+/// fix. Symlinks never reach modification: `ensure_writable_recursive`
+/// only calls this on the root and on `is_file()` entries probed via
+/// `symlink_metadata`, but the guard below makes it structural — even a
+/// symlinked root keeps its link (and its target) untouched.
+fn fix_one(path: &Path, report: &mut WritableReport) -> io::Result<()> {
+    let meta = fs::symlink_metadata(path)?;
+    if meta.file_type().is_symlink() {
+        return Ok(());
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        // Directories need owner rwx (0o700): read-only-plus-write (0o600)
+        // still denies listing and traversal, which aborts the walk below
+        // with EACCES. Files need owner-write only (0o200): nothing else
+        // may change.
+        let required = if meta.is_dir() { 0o700 } else { 0o200 };
+        let mode = meta.permissions().mode();
+        if mode & required != required {
+            let mut permissions = meta.permissions();
+            permissions.set_mode(mode | required);
+            fs::set_permissions(path, permissions)?;
+            if meta.is_dir() {
+                report.dirs_fixed += 1;
+            } else {
+                report.files_fixed += 1;
+            }
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let mut permissions = meta.permissions();
+        if permissions.readonly() {
+            // `set_readonly(false)` is correct here: this block only compiles
+            // on non-Unix targets (Windows), where it clears the readonly
+            // attribute. The `permissions_set_readonly_false` lint warns
+            // about Unix semantics (world-writable), which do not apply.
+            #[allow(clippy::permissions_set_readonly_false)]
+            permissions.set_readonly(false);
+            fs::set_permissions(path, permissions)?;
+            if meta.is_dir() {
+                report.dirs_fixed += 1;
+            } else {
+                report.files_fixed += 1;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn path_error(path: &Path, e: io::Error) -> io::Error {
+    io::Error::new(
+        e.kind(),
+        format!("cache permissions ({}): {e}", path.display()),
+    )
 }
 
 #[cfg(test)]
